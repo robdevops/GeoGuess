@@ -1,6 +1,6 @@
 # GeoGuess
 
-A GeoGuessr-style game for signalbot. `/geo` posts a street-level photo;
+A GeoGuessr-style game for [signalbot](https://github.com/robdevops/signalbot). `/geo` posts a street-level photo;
 players answer by sending a location (on Signal, the **+** button →
 Location; on Telegram, 📎 → Location; then pinch to zoom out, drag the
 pin, confirm on Signal, and send), or typed
@@ -23,19 +23,27 @@ the bot an admin); with privacy mode on, which is the default, players reply
 to the round's photo instead.
 
 It is a separate program that signalbot starts as an
-[MCP addon](../../docs/FILES_LINKS_TOOLS_MCP.md#addons) server. It speaks MCP
+[MCP addon](https://github.com/robdevops/signalbot/blob/main/docs/FILES_LINKS_TOOLS_MCP.md#addons) server. It speaks MCP
 2025-06-18 over stdio (newline-delimited JSON-RPC) by hand, with signalbot's
 addon extension, and uses no MCP library. It needs no model: its commands and
 guesses never reach one.
 
 ## Install
 
-Build it as a static binary, which the Docker image needs (it has no shell
+It needs a signalbot with MCP addon support. Get the code and build it with
+Go 1.27 or newer, as a static binary, which the Docker image needs (it has no shell
 or runtimes) and systemd is happy with:
 
 ```
-CGO_ENABLED=0 go build -o /opt/signalbot-addons/geoguess ./cmd/geoguess
+git clone https://github.com/robdevops/chat-plugin-geoguess.git
+cd chat-plugin-geoguess
+CGO_ENABLED=0 go build -ldflags='-s -w' -o /opt/signalbot-addons/geoguess .
 ```
+
+(`-ldflags='-s -w'` leaves out debug information, taking the binary from
+about 11 MB to 7.5 MB. Install it wherever you like, such as
+`/usr/local/bin/geoguess` under systemd, and give that path as `command`
+below.)
 
 Mount it read-only: under Docker, add `- /opt/signalbot-addons:/addons:ro` to
 the volumes in `compose.yaml`; under systemd, use the host path, or bind it
@@ -116,7 +124,7 @@ sent to the model or kept in the chat's history.
 What it sends out is about photos, never about players: map areas to search
 and photo IDs to Mapillary and Panoramax, and the answer's coordinates to
 Nominatim for the place's name, each with the user agent
-`geoguess (+https://github.com/robdevops/signalbot)`.
+`geoguess (+https://github.com/robdevops/chat-plugin-geoguess)`.
 
 A guess deleted for everyone afterwards is not passed on to GeoGuess, which
 keeps only its distance anyway.

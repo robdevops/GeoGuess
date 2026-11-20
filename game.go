@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/robdevops/signalbot/cmd/geoguess/geo"
+	"github.com/robdevops/chat-plugin-geoguess/geo"
 )
 
 // The texts players see.

@@ -11,8 +11,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/robdevops/signalbot/cmd/geoguess/geo"
-	"github.com/robdevops/signalbot/internal/kit/state"
+	"github.com/robdevops/chat-plugin-geoguess/geo"
+	"github.com/robdevops/chat-plugin-geoguess/internal/state"
 )
 
 // server is GeoGuess: the chats' rounds, their scores, the outbox the bot
