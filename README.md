@@ -7,12 +7,19 @@ pin, confirm on Signal, and send), or typed
 coordinates such as `-37.81, 144.96`; when time is up the
 bot names the place and ranks players by how far off they were.
 
+A game is 3 rounds, 3 photos. Round 1 runs its full time, and whoever
+guesses in it is playing; from round 2 on, a round ends as soon as all of
+them have guessed (3s later, for guesses still on their way), so a game
+goes as fast as its players. Someone who joins later still scores, but
+isn't waited for. Each round's results come out when it ends, then the
+next photo; after round 3, the game's totals.
+
 ```
-/geo                 start a round (GEO_ROUND, default 3 minutes)
-/geo 90s | /geo 5m   start a round of that length (30s to 30m)
-/geo europe          a round in a continent or countries (/geo AU,NZ); combines with a length
-/geo end             finish now and reveal (only the player who started it)
-/geo skip            cancel and reveal without scoring (only the player who started it)
+/geo                 start a game (rounds of GEO_ROUND, default 3 minutes)
+/geo 90s | /geo 5m   start a game with rounds of that length (30s to 30m; the game, at most 55 minutes)
+/geo europe          a game in a continent or countries (/geo AU,NZ); combines with a length
+/geo end             finish now, revealing the round and the totals (only the player who started it)
+/geo skip            skip this round without scoring, on to the next (only the player who started it)
 /geo scores          this chat's totals over the last 7 days
 ```
 
@@ -160,13 +167,15 @@ their cancellation, and the outbox the bot reads. GeoGuess adds:
   neither is offered to the model.
 - The caption gives the steps for the network the bot said it is on
   (Signal's **+** button, or Telegram's 📎); with none, it gives both.
-- Starting a round answers with the photo, its caption and a watch for
-  `geo_guess`, until 5s past the deadline; a recorded guess answers with the
-  reaction 📍. `/geo` gives up in time for the bot's `deadline`.
-- When a round's time is up GeoGuess queues a `post` with the results, its
-  players as `{u_…}` placeholders, and an `unwatch`. `/geo end` and
-  `/geo skip` answer with the results themselves and queue only the
-  `unwatch`. Ops the bot hasn't read are saved in `geo.json`, with their
+- Starting a game answers with round 1's photo, its caption and one watch
+  for `geo_guess` for the whole game, until 5s past its latest end; a
+  recorded guess answers with the reaction 📍. `/geo` gives up in time for
+  the bot's `deadline`.
+- When a round ends GeoGuess queues a `post` with the results, its players
+  as `{u_…}` placeholders, then the next round's photo as a `post` with the
+  image (from the buffer, waiting up to `GEO_WAIT`); after the last round,
+  the totals and an `unwatch`. `/geo end` and `/geo skip` answer with the
+  results themselves. Ops the bot hasn't read are saved in `geo.json`, with their
   IDs, so they survive a restart.
 - On start, rounds still open get their timers back, and those whose time
   passed while GeoGuess was down are revealed at once.

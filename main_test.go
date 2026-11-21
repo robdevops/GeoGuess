@@ -176,6 +176,7 @@ func testServer(t *testing.T, dir string, clk clock, photos finder, logs io.Writ
 	if err != nil {
 		t.Fatal(err)
 	}
+	s.perGame = 1 // the tests of a single round; TestGame plays a whole game
 	return s
 }
 
@@ -479,7 +480,7 @@ func TestRound(t *testing.T) {
 	}
 	w := *r.Meta.Watch
 	if w.ID == "" || w.Pattern != geo.Pattern || w.Tool != "geo_guess" || w.Guard != guard ||
-		w.Until != began.Add(95*time.Second).Format(time.RFC3339) {
+		w.Until != began.Add(90*time.Second+settle+watchSlack).Format(time.RFC3339) {
 		t.Errorf("watch %+v", w)
 	}
 
@@ -1082,5 +1083,98 @@ func TestLabels(t *testing.T) {
 	}
 	if !validID("u_ABC234", "u_") || validID("u_", "u_") || validID("u_a}b", "u_") || validID("c_x", "u_") {
 		t.Error("validID")
+	}
+}
+
+// A game of 3 rounds: round 1 runs its time and its guessers are the
+// players; a later round ends once they have all guessed, a newcomer
+// isn't waited for, each round's photo is a post with its image, and the
+// last results carry the game's totals and end the watch.
+func TestGame(t *testing.T) {
+	clk, c, _ := start(t)
+	c.s.perGame = 3
+	began := clk.Now()
+	r := c.geo("1m", from(clk, chat, alice))
+	if !strings.HasPrefix(words(r), "**Round 1 of 3** · 🌍") {
+		t.Errorf("round 1 %q", words(r))
+	}
+	if w := r.Meta.Watch; w.Until != began.Add(3*(time.Minute+settle)+2*5*time.Second+watchSlack).Format(time.RFC3339) {
+		t.Errorf("watch until %s", w.Until)
+	}
+	there := "-37.6, 143.9"
+	c.guess(there, from(clk, chat, alice))
+	c.guess(there, from(clk, chat, bob))
+	clk.Advance(30 * time.Second)
+	if p := c.outbox("0"); len(p.Ops) != 0 {
+		t.Fatalf("round 1 ended early: %+v", p)
+	}
+	clk.Advance(30*time.Second + settle)
+	waitFor(t, c.s, "round 2", func() bool { r := c.s.rounds[chat]; return r != nil && r.Number == 2 && !r.Waiting })
+	page := c.outbox("0")
+	if len(page.Ops) != 2 || !strings.HasPrefix(page.Ops[0].Text, "**Round 1 of 3** · 📍") ||
+		!strings.HasPrefix(page.Ops[1].Text, "**Round 2 of 3** · 🌍") || len(page.Ops[1].Images) != 1 || page.Ops[1].Images[0].MimeType != "image/jpeg" {
+		t.Fatalf("after round 1 %+v", page)
+	}
+	if p := c.s.rounds[chat].Players; !slices.Equal(p, []string{alice, bob}) {
+		t.Errorf("players %v", p)
+	}
+
+	// Round 2: Alice and a newcomer, then Bob, who ends it.
+	clk.Advance(5 * time.Second)
+	c.guess(there, from(clk, chat, alice))
+	c.guess(there, from(clk, chat, "u_carol"))
+	clk.Advance(settle)
+	if p := c.outbox(page.Cursor); len(p.Ops) != 0 {
+		t.Fatalf("round 2 ended before Bob guessed: %+v", p)
+	}
+	c.guess(there, from(clk, chat, bob))
+	clk.Advance(settle)
+	waitFor(t, c.s, "round 3", func() bool { r := c.s.rounds[chat]; return r != nil && r.Number == 3 && !r.Waiting })
+	page = c.outbox(page.Cursor)
+	if len(page.Ops) != 2 || !strings.HasPrefix(page.Ops[0].Text, "**Round 2 of 3** · 📍") || !strings.HasPrefix(page.Ops[1].Text, "**Round 3 of 3**") {
+		t.Fatalf("after round 2 %+v", page)
+	}
+
+	// Round 3: only Alice guesses, so it runs its time.
+	c.guess(there, from(clk, chat, alice))
+	clk.Advance(30 * time.Second)
+	if p := c.outbox(page.Cursor); len(p.Ops) != 0 {
+		t.Fatalf("round 3 ended early: %+v", p)
+	}
+	clk.Advance(30*time.Second + settle)
+	c.note()
+	page = c.outbox(page.Cursor)
+	if len(page.Ops) != 2 || !strings.Contains(page.Ops[0].Text, "\n\n🏁 **Game over**\n🥇 {u_alice} ") || page.Ops[1].Op != "unwatch" {
+		t.Fatalf("the end %+v", page)
+	}
+	if c.s.rounds[chat] != nil {
+		t.Error("the game is still on")
+	}
+}
+
+// /geo skip moves to the next round unscored; /geo end ends the game with
+// its totals.
+func TestGameSkipAndEnd(t *testing.T) {
+	clk, c, _ := start(t)
+	c.s.perGame = 3
+	c.geo("1m", from(clk, chat, alice))
+	c.guess("-37.6, 143.9", from(clk, chat, bob))
+	if got := words(c.geo("skip", from(clk, chat, alice))); !strings.HasPrefix(got, "**Round 1 of 3** · Round skipped.") {
+		t.Errorf("skip %q", got)
+	}
+	waitFor(t, c.s, "round 2", func() bool { r := c.s.rounds[chat]; return r != nil && r.Number == 2 && !r.Waiting })
+	c.guess("-37.6, 143.9", from(clk, chat, bob))
+	got := words(c.geo("end", from(clk, chat, alice)))
+	if !strings.HasPrefix(got, "**Round 2 of 3** · 📍") || !strings.Contains(got, "\n\n🏁 **Game over**\n🥇 {u_bob} ") {
+		t.Errorf("end %q", got)
+	}
+	if c.s.rounds[chat] != nil {
+		t.Error("the game is still on")
+	}
+	if got := words(c.geo("90m", from(clk, chat, alice))); got != badLength {
+		t.Errorf("too long a round: %q", got)
+	}
+	if got := words(c.geo("20m", from(clk, chat, alice))); got != longGame {
+		t.Errorf("too long a game: %q", got)
 	}
 }

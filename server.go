@@ -25,6 +25,9 @@ type server struct {
 	doc    *state.Doc
 	srv    *addon.Server
 	wake   chan struct{} // the prefetcher has work
+	// perGame is the rounds in a game: gameRounds, or 1 in the tests of a
+	// single round.
+	perGame int
 
 	mu      sync.Mutex
 	rounds  map[string]*round  // by chat
@@ -40,10 +43,10 @@ type server struct {
 	saveMu sync.Mutex // one save at a time, so the last one written is the newest
 }
 
-// round is one chat's round. Its guesses are distances only: where anyone
-// guessed is never kept.
+// round is one chat's game, at its open round. Its guesses are distances
+// only: where anyone guessed is never kept.
 type round struct {
-	ID       string           `json:"id"` // also the watch's
+	ID       string           `json:"id"` // the game's, also the watch's
 	Chat     string           `json:"chat"`
 	Starter  string           `json:"starter"` // who may end or skip it
 	Started  time.Time        `json:"started"`
@@ -52,7 +55,19 @@ type round struct {
 	Place    string           `json:"place"`
 	Credit   credit           `json:"credit"`
 	Guesses  map[string]guess `json:"guesses"` // by player
+
+	Number  int            `json:"number,omitempty"`  // the open round, from 1
+	Of      int            `json:"of,omitempty"`      // the game's rounds; 0, a round saved before games, is 1
+	Region  string         `json:"region,omitempty"`  // the game's
+	Length  time.Duration  `json:"length,omitempty"`  // each round's
+	Until   time.Time      `json:"until,omitempty"`   // when the game's watch ends, less its slack
+	Players []string       `json:"players,omitempty"` // who guessed in round 1: a later round ends once they all have
+	Totals  map[string]int `json:"totals,omitempty"`  // the game's points so far, by player
+	Waiting bool           `json:"waiting,omitempty"` // between rounds, for the next photo
 }
+
+// of is the rounds in r's game.
+func (r *round) of() int { return max(r.Of, 1) }
 
 // guess is how far one player's last guess was from the answer, and when
 // it was sent.
@@ -95,6 +110,11 @@ const (
 	// watchSlack is how long after the deadline the bot keeps the watch, so a
 	// late guess still stays out of the chat's history.
 	watchSlack = 5 * time.Second
+	// gameRounds is the rounds in a game, and maxGame the longest a game
+	// may run, with its waits for photos: within the bot's default
+	// watch_max of 1h.
+	gameRounds = 3
+	maxGame    = 55 * time.Minute
 )
 
 // newServer loads the state saved in cfg.StateDir, re-arms its rounds'
@@ -104,6 +124,7 @@ func newServer(cfg config, clk clock, photos finder, logger *log.Logger) (*serve
 		cfg: cfg, clock: clk, photos: photos, log: logger,
 		doc:     state.Open(cfg.StateDir, "geo"),
 		wake:    make(chan struct{}, 1),
+		perGame: gameRounds,
 		rounds:  map[string]*round{},
 		timers:  map[string]stopper{},
 		scores:  map[string][]score{},
@@ -132,10 +153,13 @@ func newServer(cfg config, clk clock, photos finder, logger *log.Logger) (*serve
 			r.Guesses = map[string]guess{}
 		}
 		s.rounds[r.Chat] = r
-		if !s.clock.Now().Before(r.Deadline.Add(settle)) {
+		switch {
+		case r.Waiting: // for its next photo
+			go s.nextRound(r.Chat, r.ID, r.Number+1)
+		case !s.clock.Now().Before(r.Deadline.Add(settle)):
 			s.timeUpLocked(r)
 			revealed++
-		} else {
+		default:
 			s.arm(r)
 		}
 	}

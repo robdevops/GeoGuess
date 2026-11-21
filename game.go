@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"slices"
 	"strconv"
 	"strings"
@@ -23,6 +24,7 @@ const (
 	noPhoto   = "I couldn't find a good spot in time; I'm still looking, so try /geo again in a minute."
 	badLength = "A round can be 30s to 30m, such as /geo 90s or /geo 5m."
 	usage     = "Try /geo, /geo 90s, /geo end, /geo skip, /geo scores, or a region such as /geo europe or /geo AU,NZ."
+	longGame  = "That game would run too long: ask for shorter rounds, such as /geo 5m."
 )
 
 // pin is the reaction to a recorded guess.
@@ -109,11 +111,17 @@ func (s *server) command(ctx context.Context, c *addon.Context, args string) add
 			return addon.Text("I don't know that region. " + usage)
 		}
 	}
+	if of := s.perGame; time.Duration(of)*(length+settle)+time.Duration(of-1)*s.cfg.Wait > maxGame {
+		return addon.Text(longGame)
+	}
 	return s.start(ctx, c, length, region)
 }
 
-// busy is the answer to /geo while a round is on.
+// busy is the answer to /geo while a game is on.
 func busy(r *round, now time.Time) addon.Result {
+	if r.Waiting {
+		return addon.Text(fmt.Sprintf("A game is on: round %d's photo is on its way.", r.Number+1))
+	}
 	left := max(r.Deadline.Sub(now), 0).Round(time.Second)
 	m, sec := int(left/time.Minute), int(left%time.Minute/time.Second)
 	var label string
@@ -158,12 +166,15 @@ func (s *server) start(ctx context.Context, c *addon.Context, length time.Durati
 		}
 		return busy(r, now)
 	}
+	of := s.perGame
 	r = &round{
 		ID: "r" + randomID(6), Chat: c.Chat, Starter: c.Sender,
 		Started: now, Deadline: now.Add(length),
 		Answer: photo.At, Place: photo.Place.Name,
 		Credit:  credit{Creator: photo.Creator, Source: photo.Source, Licence: photo.Licence, Link: photo.Link},
 		Guesses: map[string]guess{},
+		Number:  1, Of: of, Region: region, Length: length, Totals: map[string]int{},
+		Until: now.Add(time.Duration(of)*(length+settle) + time.Duration(of-1)*s.cfg.Wait),
 	}
 	s.rounds[c.Chat] = r
 	s.arm(r)
@@ -173,13 +184,22 @@ func (s *server) start(ctx context.Context, c *addon.Context, length time.Durati
 	return addon.Result{
 		Content: []addon.Content{
 			{Type: "image", Data: base64.StdEncoding.EncodeToString(photo.JPEG), MimeType: "image/jpeg"},
-			{Type: "text", Text: caption(r.Deadline, length, s.srv.Network())},
+			{Type: "text", Text: roundLine(r) + caption(r.Deadline, length, s.srv.Network())},
 		},
 		Meta: &addon.ResultMeta{Watch: &addon.Watch{
-			ID: r.ID, Pattern: geo.Pattern, Until: r.Deadline.Add(watchSlack).Format(time.RFC3339),
+			ID: r.ID, Pattern: geo.Pattern, Until: r.Until.Add(watchSlack).Format(time.RFC3339),
 			Tool: "geo_guess", Guard: guard,
 		}},
 	}
+}
+
+// roundLine heads a round's photo and results in a game of more than one:
+// "Round 2 of 3 · ".
+func roundLine(r *round) string {
+	if r.of() == 1 {
+		return ""
+	}
+	return fmt.Sprintf("**Round %d of %d** · ", r.Number, r.of())
 }
 
 // caption is the photo's caption: how to guess, on the chat network the
@@ -205,17 +225,21 @@ func lengthLabel(d time.Duration) string {
 	return strconv.Itoa(int(d.Round(time.Second)/time.Second)) + " sec"
 }
 
-// arm sets r's timer to reveal it once its time is up. s.mu is held.
+// arm sets r's timer to reveal its open round once its time is up,
+// replacing any timer it had. s.mu is held.
 func (s *server) arm(r *round) {
-	chat, id := r.Chat, r.ID
-	s.timers[chat] = s.clock.AfterFunc(r.Deadline.Add(settle).Sub(s.clock.Now()), func() { s.timeUp(chat, id) })
+	chat, id, number := r.Chat, r.ID, r.Number
+	if t := s.timers[chat]; t != nil {
+		t.Stop()
+	}
+	s.timers[chat] = s.clock.AfterFunc(r.Deadline.Add(settle).Sub(s.clock.Now()), func() { s.timeUp(chat, id, number) })
 }
 
-// timeUp reveals the round id in chat, if it is still on.
-func (s *server) timeUp(chat, id string) {
+// timeUp reveals round number of the game id in chat, if it is still open.
+func (s *server) timeUp(chat, id string, number int) {
 	s.mu.Lock()
 	r := s.rounds[chat]
-	if r == nil || r.ID != id {
+	if r == nil || r.ID != id || r.Number != number || r.Waiting {
 		s.mu.Unlock()
 		return
 	}
@@ -224,11 +248,114 @@ func (s *server) timeUp(chat, id string) {
 	s.save()
 }
 
-// timeUpLocked ends r and queues its results and the end of its watch for
-// the bot to post. s.mu is held.
+// timeUpLocked ends r's open round, queues its results, and moves the game
+// on. s.mu is held.
 func (s *server) timeUpLocked(r *round) {
-	results := s.end(r, true)
-	s.queue(addon.Op{Op: "post", Chat: r.Chat, Text: results}, addon.Op{Op: "unwatch", Chat: r.Chat, Watch: r.ID})
+	s.advanceLocked(r, s.closeRound(r, true))
+}
+
+// advanceLocked queues the results of r's round just closed, then asks for
+// the next round's photo; after the last round, the game's totals too, and
+// the end of its watch. s.mu is held.
+func (s *server) advanceLocked(r *round, results string) {
+	if r.Number < r.of() {
+		s.queue(addon.Op{Op: "post", Chat: r.Chat, Text: results})
+		r.Waiting = true
+		go s.nextRound(r.Chat, r.ID, r.Number+1)
+		return
+	}
+	s.queue(addon.Op{Op: "post", Chat: r.Chat, Text: results + totals(r)})
+	s.endGame(r)
+}
+
+// endGame forgets r's game and queues the end of its watch. s.mu is held.
+func (s *server) endGame(r *round) {
+	delete(s.rounds, r.Chat)
+	if t := s.timers[r.Chat]; t != nil {
+		t.Stop()
+		delete(s.timers, r.Chat)
+	}
+	s.queue(addon.Op{Op: "unwatch", Chat: r.Chat, Watch: r.ID})
+}
+
+// nextRound opens round number of the game id in chat with a photo from
+// the buffer, waiting up to GEO_WAIT for one, and queues the photo; with
+// none, or no time left on the game's watch, it ends the game.
+func (s *server) nextRound(chat, id string, number int) {
+	s.mu.Lock()
+	r := s.rounds[chat]
+	if r == nil || r.ID != id || r.Number != number-1 || !r.Waiting {
+		s.mu.Unlock()
+		return
+	}
+	region := r.Region
+	s.mu.Unlock()
+	photo, ok := s.take(context.Background(), region, s.cfg.Wait)
+	s.mu.Lock()
+	r = s.rounds[chat]
+	if r == nil || r.ID != id || r.Number != number-1 || !r.Waiting { // ended meanwhile
+		if ok {
+			s.buffer = append([]geo.Photo{photo}, s.buffer...)
+			close(s.changed)
+			s.changed = make(chan struct{})
+		}
+		s.mu.Unlock()
+		return
+	}
+	now := s.clock.Now()
+	length := min(r.Length, r.Until.Sub(now)-settle)
+	switch {
+	case !ok:
+		s.queue(addon.Op{Op: "post", Chat: chat, Text: fmt.Sprintf("I couldn't find a spot for round %d, so the game ends here.", number) + totals(r)})
+		s.endGame(r)
+	case length < minRound:
+		s.buffer = append([]geo.Photo{photo}, s.buffer...)
+		close(s.changed)
+		s.changed = make(chan struct{})
+		s.queue(addon.Op{Op: "post", Chat: chat, Text: fmt.Sprintf("No time is left for round %d, so the game ends here.", number) + totals(r)})
+		s.endGame(r)
+	default:
+		r.Number, r.Waiting = number, false
+		r.Started, r.Deadline = now, now.Add(length)
+		r.Answer, r.Place, r.Guesses = photo.At, photo.Place.Name, map[string]guess{}
+		r.Credit = credit{Creator: photo.Creator, Source: photo.Source, Licence: photo.Licence, Link: photo.Link}
+		s.arm(r)
+		s.queue(addon.Op{Op: "post", Chat: chat, Text: roundLine(r) + caption(r.Deadline, length, s.srv.Network()),
+			Images: []addon.Image{{Data: base64.StdEncoding.EncodeToString(photo.JPEG), MimeType: "image/jpeg", Name: "geoguess.jpg"}}})
+		s.log.Printf("round %d of game %s started: %s, a %s photo", number, r.ID, length, photo.Source)
+	}
+	s.mu.Unlock()
+	s.save()
+}
+
+// totals is the end of a game of more than one round: its players ranked
+// by their points over the game. Players are {u_…} placeholders.
+func totals(r *round) string {
+	if r.of() == 1 {
+		return ""
+	}
+	type total struct {
+		user   string
+		points int
+	}
+	var list []total
+	for u, p := range r.Totals {
+		list = append(list, total{u, p})
+	}
+	slices.SortFunc(list, func(a, b total) int { return cmp.Or(cmp.Compare(b.points, a.points), strings.Compare(a.user, b.user)) })
+	var b strings.Builder
+	b.WriteString("\n\n🏁 **Game over**")
+	if len(list) == 0 {
+		b.WriteString("\nNobody scored.")
+	}
+	rank := 0
+	for i, t := range list {
+		if i == 0 || t.points != list[i-1].points {
+			rank = i + 1
+		}
+		b.WriteString("\n" + medal(rank) + " {" + t.user + "} " + geo.Thousands(t.points))
+	}
+	return b.String()
 }
 
 // finish is /geo end (skip false) or /geo skip, which only the player who
@@ -248,20 +375,40 @@ func (s *server) finish(c *addon.Context, skip bool) addon.Result {
 		s.mu.Unlock()
 		return addon.Text("Only the player who started this round can end it.")
 	}
-	results := s.end(r, !skip)
-	s.queue(addon.Op{Op: "unwatch", Chat: r.Chat, Watch: r.ID})
+	var text string
+	switch {
+	case skip && r.Waiting:
+		s.mu.Unlock()
+		return addon.Text(fmt.Sprintf("Round %d's photo is on its way.", r.Number+1))
+	case skip && r.Number < r.of(): // the next round follows, as at the round's end
+		text = s.closeRound(r, false)
+		r.Waiting = true
+		go s.nextRound(r.Chat, r.ID, r.Number+1)
+	case skip:
+		text = s.closeRound(r, false) + totals(r)
+		s.endGame(r)
+	case r.Waiting: // /geo end between rounds
+		text = strings.TrimPrefix(totals(r), "\n\n")
+		s.endGame(r)
+	default:
+		text = s.closeRound(r, true) + totals(r)
+		s.endGame(r)
+	}
 	s.mu.Unlock()
 	s.save()
-	return addon.Text(results)
+	return addon.Text(text)
 }
 
-// end closes r, adding its points to the chat's scores if scored, and
-// returns its results. s.mu is held.
-func (s *server) end(r *round, scored bool) string {
-	delete(s.rounds, r.Chat)
+// closeRound closes r's open round, adding its points to the chat's scores
+// and the game's totals if scored, and returns its results. Round 1's
+// guessers become the game's players. s.mu is held.
+func (s *server) closeRound(r *round, scored bool) string {
 	if t := s.timers[r.Chat]; t != nil {
 		t.Stop()
 		delete(s.timers, r.Chat)
+	}
+	if r.Number <= 1 {
+		r.Players = slices.Sorted(maps.Keys(r.Guesses))
 	}
 	guesses := make([]geo.Guess, 0, len(r.Guesses))
 	for user, g := range r.Guesses {
@@ -272,14 +419,18 @@ func (s *server) end(r *round, scored bool) string {
 	if scored {
 		now := s.clock.Now()
 		s.pruneScores(now)
+		if r.Totals == nil {
+			r.Totals = map[string]int{}
+		}
 		for _, p := range placings {
 			s.scores[r.Chat] = append(s.scores[r.Chat], score{User: p.User, Points: p.Points, At: now})
+			r.Totals[p.User] += p.Points
 		}
 	} else {
 		how = "skipped"
 	}
 	s.log.Printf("round %s %s: %d guesses", r.ID, how, len(placings))
-	return results(r, placings, scored)
+	return roundLine(r) + results(r, placings, scored)
 }
 
 // results is a round's reveal: the place, then each player's distance and
@@ -373,9 +524,30 @@ func (s *server) guess(c *addon.Context, msg string) addon.Result {
 		return addon.Text("Too late for this round.")
 	}
 	r.Guesses[c.Sender] = guess{Km: geo.Km(p, r.Answer), At: at}
+	if s.allGuessed(r) {
+		// Everyone playing has guessed: end the round now, revealing it after
+		// settle, as at its deadline, for guesses still on their way.
+		r.Deadline = s.clock.Now()
+		s.arm(r)
+		s.log.Printf("round %d of game %s ended early", r.Number, r.ID)
+	}
 	s.mu.Unlock()
 	s.save()
 	return addon.Result{Content: addon.Text("Recorded.").Content, Meta: &addon.ResultMeta{React: pin}}
+}
+
+// allGuessed reports whether a round after the first has a guess from
+// each player of round 1, and is still before its deadline. s.mu is held.
+func (s *server) allGuessed(r *round) bool {
+	if r.Number <= 1 || len(r.Players) == 0 || !s.clock.Now().Before(r.Deadline) {
+		return false
+	}
+	for _, p := range r.Players {
+		if _, ok := r.Guesses[p]; !ok {
+			return false
+		}
+	}
+	return true
 }
 
 // scoreboard is /geo scores: the chat's totals over the last scoreDays.
