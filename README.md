@@ -51,15 +51,17 @@ about 11 MB to 7.5 MB. Install it wherever you like, such as
 `/usr/local/bin/geoguess` under systemd, and give that path as `command`
 below.)
 
-Mount it read-only: under Docker, add `- /opt/signalbot-addons:/addons:ro` to
-the volumes in `compose.yaml`; under systemd, use the host path, or bind it
-with `BindReadOnlyPaths=/opt/signalbot-addons:/addons` in a drop-in. Then add
+Give its full path as `command`. Under systemd there's nothing to mount:
+the unit's `ProtectSystem=strict` leaves `/opt` readable. Under Docker,
+mount the directory read-only at the same path, by adding
+`- /opt/signalbot-addons:/opt/signalbot-addons:ro` to the volumes in
+`compose.yaml`, so the same file works for both. Then add
 it to the MCP servers file (`MCP_CONFIG`). The server must be called `geo`,
 which is what gives it the `GEO_` settings below:
 
 ```jsonc
 "geo": {
-  "command": "/addons/geoguess",
+  "command": "/opt/signalbot-addons/geoguess",
   "chat_commands": {"geo": {"tool": "geo", "direct": true, "example": "/geo 3m", "timeout": "60s"}},
   "addon": {"chats": ["<group id>"], "post": true, "react": true, "watch": true, "watch_max": "1h"}
 }
