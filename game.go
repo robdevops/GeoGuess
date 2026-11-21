@@ -111,7 +111,7 @@ func (s *server) command(ctx context.Context, c *addon.Context, args string) add
 			return addon.Text("I don't know that region. " + usage)
 		}
 	}
-	if of := s.perGame; time.Duration(of)*(length+settle)+time.Duration(of-1)*s.cfg.Wait > maxGame {
+	if of := s.perGame; gameTime(of, length, s.cfg.Wait) > maxGame {
 		return addon.Text(longGame)
 	}
 	return s.start(ctx, c, length, region)
@@ -174,7 +174,7 @@ func (s *server) start(ctx context.Context, c *addon.Context, length time.Durati
 		Credit:  credit{Creator: photo.Creator, Source: photo.Source, Licence: photo.Licence, Link: photo.Link},
 		Guesses: map[string]guess{},
 		Number:  1, Of: of, Region: region, Length: length, Totals: map[string]int{},
-		Until: now.Add(time.Duration(of)*(length+settle) + time.Duration(of-1)*s.cfg.Wait),
+		Until: now.Add(gameTime(of, length, s.cfg.Wait)),
 	}
 	s.rounds[c.Chat] = r
 	s.arm(r)
@@ -193,11 +193,24 @@ func (s *server) start(ctx context.Context, c *addon.Context, length time.Durati
 	}
 }
 
+// gameTime is the longest a game of of rounds of length may run: a
+// tie-breaker round after them, if one is needed, and the waits for each
+// later round's photo.
+func gameTime(of int, length, wait time.Duration) time.Duration {
+	if of == 1 {
+		return length + settle
+	}
+	return time.Duration(of+1)*(length+settle) + time.Duration(of)*wait
+}
+
 // roundLine heads a round's photo and results in a game of more than one:
-// "Round 2 of 3 · ".
+// "Round 2 of 3 · ", or "Tie-breaker · ".
 func roundLine(r *round) string {
-	if r.of() == 1 {
+	switch {
+	case r.of() == 1:
 		return ""
+	case r.Number > r.of():
+		return "**Tie-breaker** · "
 	}
 	return fmt.Sprintf("**Round %d of %d** · ", r.Number, r.of())
 }
@@ -258,7 +271,16 @@ func (s *server) timeUpLocked(r *round) {
 // the next round's photo; after the last round, the game's totals too, and
 // the end of its watch. s.mu is held.
 func (s *server) advanceLocked(r *round, results string) {
-	if r.Number < r.of() {
+	tie := tied(r)
+	if r.Number == r.of() && len(tie) > 1 {
+		names := make([]string, len(tie))
+		for i, u := range tie {
+			names[i] = "{" + u + "}"
+		}
+		results += "\n\n🤝 " + strings.Join(names, ", ") + fmt.Sprintf(" are tied on %d %s: a tie-breaker round decides it, and only they can win it.", r.Wins[tie[0]], plural(r.Wins[tie[0]], "win", "wins"))
+		r.Tie = tie
+	}
+	if r.Number < r.of() || len(r.Tie) > 0 && r.Number == r.of() {
 		s.queue(addon.Op{Op: "post", Chat: r.Chat, Text: results})
 		r.Waiting = true
 		go s.nextRound(r.Chat, r.ID, r.Number+1)
@@ -328,34 +350,72 @@ func (s *server) nextRound(chat, id string, number int) {
 	s.save()
 }
 
-// totals is the end of a game of more than one round: its players ranked
-// by their points over the game. Players are {u_…} placeholders.
+// tied is the players tied for the most round wins, if more than one and
+// at least one win each, sorted.
+func tied(r *round) []string {
+	most := 0
+	for _, w := range r.Wins {
+		most = max(most, w)
+	}
+	var out []string
+	for u, w := range r.Wins {
+		if w == most && most > 0 {
+			out = append(out, u)
+		}
+	}
+	slices.Sort(out)
+	if len(out) < 2 {
+		return nil
+	}
+	return out
+}
+
+// totals is the end of a game of more than one round: the winner, by
+// rounds won, then the players ranked by wins and then points. After a
+// tie-breaker that none of the tied won, points decide among them.
+// Players are {u_…} placeholders.
 func totals(r *round) string {
 	if r.of() == 1 {
 		return ""
 	}
 	type total struct {
-		user   string
-		points int
+		user         string
+		wins, points int
 	}
 	var list []total
 	for u, p := range r.Totals {
-		list = append(list, total{u, p})
+		list = append(list, total{u, r.Wins[u], p})
 	}
-	slices.SortFunc(list, func(a, b total) int { return cmp.Or(cmp.Compare(b.points, a.points), strings.Compare(a.user, b.user)) })
+	slices.SortFunc(list, func(a, b total) int {
+		return cmp.Or(cmp.Compare(b.wins, a.wins), cmp.Compare(b.points, a.points), strings.Compare(a.user, b.user))
+	})
 	var b strings.Builder
 	b.WriteString("\n\n🏁 **Game over**")
-	if len(list) == 0 {
+	switch {
+	case len(list) == 0 || list[0].wins == 0:
 		b.WriteString("\nNobody scored.")
+		return b.String()
+	case len(list) > 1 && list[1].wins == list[0].wins && list[1].points == list[0].points:
+		b.WriteString(": a draw.")
+	default:
+		b.WriteString(": 🏆 {" + list[0].user + "} wins!")
 	}
 	rank := 0
 	for i, t := range list {
-		if i == 0 || t.points != list[i-1].points {
+		if i == 0 || t.wins != list[i-1].wins || t.points != list[i-1].points {
 			rank = i + 1
 		}
-		b.WriteString("\n" + medal(rank) + " {" + t.user + "} " + geo.Thousands(t.points))
+		b.WriteString(fmt.Sprintf("\n%s {%s} %d %s · %s", medal(rank), t.user, t.wins, plural(t.wins, "win", "wins"), geo.Thousands(t.points)))
 	}
 	return b.String()
+}
+
+// plural is one or many, by n.
+func plural(n int, one, many string) string {
+	if n == 1 {
+		return one
+	}
+	return many
 }
 
 // finish is /geo end (skip false) or /geo skip, which only the player who
@@ -425,6 +485,15 @@ func (s *server) closeRound(r *round, scored bool) string {
 		for _, p := range placings {
 			s.scores[r.Chat] = append(s.scores[r.Chat], score{User: p.User, Points: p.Points, At: now})
 			r.Totals[p.User] += p.Points
+		}
+		if r.Wins == nil {
+			r.Wins = map[string]int{}
+		}
+		for _, p := range placings { // the round's winner: in a tie-breaker, the nearest of the tied
+			if len(r.Tie) == 0 || slices.Contains(r.Tie, p.User) {
+				r.Wins[p.User]++
+				break
+			}
 		}
 	} else {
 		how = "skipped"
@@ -539,10 +608,14 @@ func (s *server) guess(c *addon.Context, msg string) addon.Result {
 // allGuessed reports whether a round after the first has a guess from
 // each player of round 1, and is still before its deadline. s.mu is held.
 func (s *server) allGuessed(r *round) bool {
-	if r.Number <= 1 || len(r.Players) == 0 || !s.clock.Now().Before(r.Deadline) {
+	players := r.Players
+	if len(r.Tie) > 0 {
+		players = r.Tie
+	}
+	if r.Number <= 1 || len(players) == 0 || !s.clock.Now().Before(r.Deadline) {
 		return false
 	}
-	for _, p := range r.Players {
+	for _, p := range players {
 		if _, ok := r.Guesses[p]; !ok {
 			return false
 		}

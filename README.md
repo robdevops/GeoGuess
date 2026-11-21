@@ -12,11 +12,17 @@ guesses in it is playing; from round 2 on, a round ends as soon as all of
 them have guessed (3s later, for guesses still on their way), so a game
 goes as fast as its players. Someone who joins later still scores, but
 isn't waited for. Each round's results come out when it ends, then the
-next photo; after round 3, the game's totals.
+next photo.
+
+Best of 3 wins: the nearest guess wins a round, and whoever wins the most
+rounds wins the game, with points shown alongside. All 3 rounds are
+played. If the top players are tied on wins, a tie-breaker round follows:
+anyone may guess, but only the tied players can win it, and it ends once
+they have all guessed. If none of them wins it, points decide.
 
 ```
 /geo                 start a game (rounds of GEO_ROUND, default 3 minutes)
-/geo 90s | /geo 5m   start a game with rounds of that length (30s to 30m; the game, at most 55 minutes)
+/geo 90s | /geo 5m   start a game with rounds of that length (30s to 30m; the game, with a possible tie-breaker, at most 55 minutes)
 /geo europe          a game in a continent or countries (/geo AU,NZ); combines with a length
 /geo end             finish now, revealing the round and the totals (only the player who started it)
 /geo skip            skip this round without scoring, on to the next (only the player who started it)

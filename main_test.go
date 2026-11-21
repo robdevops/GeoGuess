@@ -1098,12 +1098,12 @@ func TestGame(t *testing.T) {
 	if !strings.HasPrefix(words(r), "**Round 1 of 3** · 🌍") {
 		t.Errorf("round 1 %q", words(r))
 	}
-	if w := r.Meta.Watch; w.Until != began.Add(3*(time.Minute+settle)+2*5*time.Second+watchSlack).Format(time.RFC3339) {
+	if w := r.Meta.Watch; w.Until != began.Add(4*(time.Minute+settle)+3*5*time.Second+watchSlack).Format(time.RFC3339) {
 		t.Errorf("watch until %s", w.Until)
 	}
-	there := "-37.6, 143.9"
+	there, further := "-37.6, 143.9", "-37.6, 143.95" // Alice is always nearest
 	c.guess(there, from(clk, chat, alice))
-	c.guess(there, from(clk, chat, bob))
+	c.guess(further, from(clk, chat, bob))
 	clk.Advance(30 * time.Second)
 	if p := c.outbox("0"); len(p.Ops) != 0 {
 		t.Fatalf("round 1 ended early: %+v", p)
@@ -1122,12 +1122,12 @@ func TestGame(t *testing.T) {
 	// Round 2: Alice and a newcomer, then Bob, who ends it.
 	clk.Advance(5 * time.Second)
 	c.guess(there, from(clk, chat, alice))
-	c.guess(there, from(clk, chat, "u_carol"))
+	c.guess(further, from(clk, chat, "u_carol"))
 	clk.Advance(settle)
 	if p := c.outbox(page.Cursor); len(p.Ops) != 0 {
 		t.Fatalf("round 2 ended before Bob guessed: %+v", p)
 	}
-	c.guess(there, from(clk, chat, bob))
+	c.guess(further, from(clk, chat, bob))
 	clk.Advance(settle)
 	waitFor(t, c.s, "round 3", func() bool { r := c.s.rounds[chat]; return r != nil && r.Number == 3 && !r.Waiting })
 	page = c.outbox(page.Cursor)
@@ -1144,7 +1144,7 @@ func TestGame(t *testing.T) {
 	clk.Advance(30*time.Second + settle)
 	c.note()
 	page = c.outbox(page.Cursor)
-	if len(page.Ops) != 2 || !strings.Contains(page.Ops[0].Text, "\n\n🏁 **Game over**\n🥇 {u_alice} ") || page.Ops[1].Op != "unwatch" {
+	if len(page.Ops) != 2 || !strings.Contains(page.Ops[0].Text, "\n\n🏁 **Game over**: 🏆 {u_alice} wins!\n🥇 {u_alice} 3 wins · ") || page.Ops[1].Op != "unwatch" {
 		t.Fatalf("the end %+v", page)
 	}
 	if c.s.rounds[chat] != nil {
@@ -1165,7 +1165,7 @@ func TestGameSkipAndEnd(t *testing.T) {
 	waitFor(t, c.s, "round 2", func() bool { r := c.s.rounds[chat]; return r != nil && r.Number == 2 && !r.Waiting })
 	c.guess("-37.6, 143.9", from(clk, chat, bob))
 	got := words(c.geo("end", from(clk, chat, alice)))
-	if !strings.HasPrefix(got, "**Round 2 of 3** · 📍") || !strings.Contains(got, "\n\n🏁 **Game over**\n🥇 {u_bob} ") {
+	if !strings.HasPrefix(got, "**Round 2 of 3** · 📍") || !strings.Contains(got, "\n\n🏁 **Game over**: 🏆 {u_bob} wins!\n🥇 {u_bob} 1 win · ") {
 		t.Errorf("end %q", got)
 	}
 	if c.s.rounds[chat] != nil {
@@ -1176,5 +1176,46 @@ func TestGameSkipAndEnd(t *testing.T) {
 	}
 	if got := words(c.geo("20m", from(clk, chat, alice))); got != longGame {
 		t.Errorf("too long a game: %q", got)
+	}
+}
+
+// Tied on round wins after round 3, the tied players play a tie-breaker,
+// which ends once they have both guessed, and which only they can win.
+func TestGameTieBreaker(t *testing.T) {
+	clk, c, _ := start(t)
+	c.s.perGame = 3
+	near, far := "-37.56, 143.85", "-37.6, 143.9"
+	next := func(n int) {
+		t.Helper()
+		waitFor(t, c.s, fmt.Sprint("round ", n), func() bool { r := c.s.rounds[chat]; return r != nil && r.Number == n && !r.Waiting })
+	}
+	c.geo("1m", from(clk, chat, alice))
+	c.guess(near, from(clk, chat, alice)) // Alice wins round 1
+	c.guess(far, from(clk, chat, bob))
+	clk.Advance(time.Minute + settle)
+	next(2)
+	c.guess(far, from(clk, chat, alice))
+	c.guess(near, from(clk, chat, bob)) // Bob wins round 2, which both ending ends
+	clk.Advance(settle)
+	next(3)
+	clk.Advance(time.Minute + settle) // nobody guesses round 3
+	next(4)
+	page := c.outbox("0")
+	if last := page.Ops[len(page.Ops)-2].Text; !strings.Contains(last, "\n\n🤝 {u_alice}, {u_bob} are tied on 1 win: a tie-breaker round decides it") {
+		t.Errorf("round 3's results %q", last)
+	}
+	if photo := page.Ops[len(page.Ops)-1]; !strings.HasPrefix(photo.Text, "**Tie-breaker** · 🌍") || len(photo.Images) != 1 {
+		t.Errorf("the tie-breaker %+v", photo)
+	}
+	c.guess(near, from(clk, chat, "u_carol")) // nearest, but not tied
+	c.guess(far, from(clk, chat, alice))
+	c.guess(far+"1", from(clk, chat, bob))
+	clk.Advance(settle)
+	c.note()
+	waitFor(t, c.s, "the end", func() bool { return c.s.rounds[chat] == nil })
+	page = c.outbox(page.Cursor)
+	if len(page.Ops) < 2 || !strings.Contains(page.Ops[len(page.Ops)-2].Text, "**Tie-breaker** · 📍") ||
+		!strings.Contains(page.Ops[len(page.Ops)-2].Text, "🏁 **Game over**: 🏆 {u_alice} wins!\n🥇 {u_alice} 2 wins · ") {
+		t.Errorf("the end %+v", page)
 	}
 }

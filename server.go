@@ -63,6 +63,8 @@ type round struct {
 	Until   time.Time      `json:"until,omitempty"`   // when the game's watch ends, less its slack
 	Players []string       `json:"players,omitempty"` // who guessed in round 1: a later round ends once they all have
 	Totals  map[string]int `json:"totals,omitempty"`  // the game's points so far, by player
+	Wins    map[string]int `json:"wins,omitempty"`    // rounds won so far, by player
+	Tie     []string       `json:"tie,omitempty"`     // in a tie-breaker round, the players tied for the win
 	Waiting bool           `json:"waiting,omitempty"` // between rounds, for the next photo
 }
 
