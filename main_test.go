@@ -826,7 +826,10 @@ func TestConfig(t *testing.T) {
 	if err := checkDir(t.TempDir()); err != nil {
 		t.Error(err)
 	}
-	if err := checkDir(t.TempDir() + "/missing"); err == nil || !strings.Contains(err.Error(), "GEO_STATE_DIR") {
+	if err := checkDir(t.TempDir() + "/missing/geo"); err != nil {
+		t.Errorf("a missing directory isn't created: %v", err)
+	}
+	if err := checkDir("/proc/geo"); err == nil || !strings.Contains(err.Error(), "GEO_STATE_DIR") {
 		t.Errorf("a missing directory: %v", err)
 	}
 }

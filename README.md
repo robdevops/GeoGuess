@@ -78,15 +78,12 @@ given up on. A call that waits holds one of the bot's 2 calls at once for
 GeoGuess, so while two chats each wait for a photo, `/geo end`, `/geo skip`
 and `/geo scores` are told GeoGuess is busy.
 
-GeoGuess keeps its own files in `GEO_STATE_DIR`, which you create, writable by
-the bot's user, and set in `/etc/signalbot.env`:
-
-- **systemd:** in a drop-in (`sudo systemctl edit signalbot`), add
-  `StateDirectory=geoguess` (the unit's `DynamicUser=` makes it and owns it),
-  and set `GEO_STATE_DIR=/var/lib/geoguess`.
-- **Docker:** `sudo install -d -o 65532 -g 65532 -m 700 /var/lib/private/geoguess`,
-  add `- /var/lib/private/geoguess:/geo` to the volumes, and set
-  `GEO_STATE_DIR=/geo`.
+GeoGuess keeps its own files in `GEO_STATE_DIR`. There's nothing to set up:
+signalbot sets it to `addons/geo` in its own state directory
+(`/var/lib/signalbot/addons/geo` under systemd, `/data/addons/geo` in
+Docker), and GeoGuess creates it, for the bot's user alone. To keep them
+elsewhere, set `GEO_STATE_DIR` in `/etc/signalbot.env` to a directory the
+bot's user may create or write; one you set already keeps working.
 
 It shares the bot's memory limit, so allow for `GEO_MEMLIMIT` in `mem_limit`
 or `MemoryMax`.
@@ -101,7 +98,7 @@ trusts its CA), and nothing else.
 
 | Variable | Default | Description |
 |---|---|---|
-| `GEO_STATE_DIR` | — (required) | Where GeoGuess keeps `geo.json` and its log. Create it, writable by the bot's user; GeoGuess exits at start if it can't list and write it |
+| `GEO_STATE_DIR` | signalbot's `addons/geo` | Where GeoGuess keeps `geo.json` and its log. Created, mode 700, if missing; GeoGuess exits at start if it can't create, list and write it |
 | `GEO_MAPILLARY_TOKEN` | empty | Mapillary client token (`MLY\|…`), sent as `Authorization: OAuth <token>`. Empty means Panoramax only, and then rounds are in France unless `GEO_REGIONS` says otherwise |
 | `GEO_MEMLIMIT` | `200MiB` | Memory limit, applied with `debug.SetMemoryLimit`, written as `GOMEMLIMIT` is (`B`, `KiB`, `MiB`, `GiB`, `TiB`) |
 | `GEO_ROUND` | `3m` | Default round length, 30s to 30m |
