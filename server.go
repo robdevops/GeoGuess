@@ -6,43 +6,36 @@ import (
 	"encoding/json"
 	"log"
 	"slices"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/robdevops/chat-plugin-geoguess/geo"
 	"github.com/robdevops/chat-plugin-geoguess/internal/state"
+	"github.com/robdevops/signalbot/addon"
 )
 
-// server is GeoGuess: the chats' rounds, their scores, the outbox the bot
-// reads, and the photos kept ready.
+// server is GeoGuess: the chats' rounds, their scores and the photos kept
+// ready. srv speaks to the bot, and holds the outbox it reads.
 type server struct {
 	cfg    config
 	clock  clock
 	photos finder
 	log    *log.Logger
 	doc    *state.Doc
-	nonce  string // this run's, in each outbox cursor and op ID
+	srv    *addon.Server
+	wake   chan struct{} // the prefetcher has work
 
-	out   *wire
-	dirty chan struct{} // the outbox gained ops: tell the client
-	wake  chan struct{} // the prefetcher has work
-
-	mu         sync.Mutex
-	rounds     map[string]*round  // by chat
-	timers     map[string]stopper // each round's, by chat
-	used       []string           // the last maxUsed photos' keys, oldest first
-	scores     map[string][]score // by chat, the last scoreDays days
-	outbox     []held             // ops the bot hasn't read past, oldest first
-	seq        int64              // the last op's sequence number
-	subscribed bool               // the client wants to hear of the outbox
-	buffer     []geo.Photo        // photos ready for a round, oldest first
-	wants      map[string]bool    // regions a /geo asked for that the buffer lacks
-	retries    map[string]retry   // GEO_KEEP regions whose last search failed
-	changed    chan struct{}      // closed when the buffer gains a photo
-	seeds      map[string]*geo.Seeds
-	network    string // the chat network the bot said it is on, "" if it didn't
+	mu      sync.Mutex
+	rounds  map[string]*round  // by chat
+	timers  map[string]stopper // each round's, by chat
+	used    []string           // the last maxUsed photos' keys, oldest first
+	scores  map[string][]score // by chat, the last scoreDays days
+	buffer  []geo.Photo        // photos ready for a round, oldest first
+	wants   map[string]bool    // regions a /geo asked for that the buffer lacks
+	retries map[string]retry   // GEO_KEEP regions whose last search failed
+	changed chan struct{}      // closed when the buffer gains a photo
+	seeds   map[string]*geo.Seeds
 
 	saveMu sync.Mutex // one save at a time, so the last one written is the newest
 }
@@ -88,7 +81,7 @@ type saved struct {
 	Rounds []*round           `json:"rounds"`
 	Used   []string           `json:"used"`
 	Scores map[string][]score `json:"scores"`
-	Outbox []held             `json:"outbox"`
+	Outbox []addon.Held       `json:"outbox"`
 }
 
 // The state's limits: photos remembered as used, days of scores, and the
@@ -110,8 +103,6 @@ func newServer(cfg config, clk clock, photos finder, logger *log.Logger) (*serve
 	s := &server{
 		cfg: cfg, clock: clk, photos: photos, log: logger,
 		doc:     state.Open(cfg.StateDir, "geo"),
-		nonce:   randomID(4),
-		dirty:   make(chan struct{}, 1),
 		wake:    make(chan struct{}, 1),
 		rounds:  map[string]*round{},
 		timers:  map[string]stopper{},
@@ -121,6 +112,7 @@ func newServer(cfg config, clk clock, photos finder, logger *log.Logger) (*serve
 		changed: make(chan struct{}),
 		seeds:   map[string]*geo.Seeds{},
 	}
+	s.srv = addon.New(addon.Config{Name: "geoguess", Title: "GeoGuess", Version: "1", Tools: s.tools(), Now: clk.Now, Changed: s.save})
 	var st saved
 	if _, err := s.doc.Load(&st); err != nil {
 		return nil, err
@@ -129,11 +121,7 @@ func newServer(cfg config, clk clock, photos finder, logger *log.Logger) (*serve
 	if st.Scores != nil {
 		s.scores = st.Scores
 	}
-	for _, h := range st.Outbox {
-		s.seq++
-		h.seq = s.seq
-		s.outbox = append(s.outbox, h)
-	}
+	s.srv.Restore(st.Outbox)
 	s.mu.Lock()
 	revealed := 0
 	for _, r := range st.Rounds {
@@ -152,9 +140,8 @@ func newServer(cfg config, clk clock, photos finder, logger *log.Logger) (*serve
 		}
 	}
 	s.mu.Unlock()
-	s.log.Printf("started: %d rounds open, %d revealed late, %d ops held", len(s.rounds), revealed, len(s.outbox))
+	s.log.Printf("started: %d rounds open, %d revealed late, %d ops held", len(s.rounds), revealed, len(s.srv.Outbox()))
 	if revealed > 0 {
-		s.poke()
 		s.save()
 	}
 	return s, nil
@@ -166,7 +153,7 @@ func (s *server) save() {
 	s.saveMu.Lock()
 	defer s.saveMu.Unlock()
 	s.mu.Lock()
-	st := saved{Used: s.used, Scores: s.scores, Outbox: s.outbox, Rounds: make([]*round, 0, len(s.rounds))}
+	st := saved{Used: s.used, Scores: s.scores, Outbox: s.srv.Outbox(), Rounds: make([]*round, 0, len(s.rounds))}
 	for _, r := range s.rounds {
 		st.Rounds = append(st.Rounds, r)
 	}
@@ -219,90 +206,10 @@ func validID(id, prefix string) bool {
 	return true
 }
 
-// held is an op waiting for the bot to read past it.
-type held struct {
-	Op     op        `json:"op"`
-	Queued time.Time `json:"queued"`
-	seq    int64     // this run's, which cursors count in
-}
-
-// op is one thing the bot is asked to do: post in a chat, or end a watch.
-type op struct {
-	ID    string `json:"id"`
-	Op    string `json:"op"` // post or unwatch
-	Chat  string `json:"chat"`
-	Text  string `json:"text,omitempty"`
-	Watch string `json:"watch,omitempty"`
-}
-
-// outboxPage is what reading the outbox returns.
-type outboxPage struct {
-	Cursor string `json:"cursor"`
-	More   bool   `json:"more"`
-	Ops    []op   `json:"ops"`
-}
-
-// The outbox's limits: how long an op unread is kept, and the most a page
-// holds, well under the 4 MiB line signalbot reads.
-const (
-	keepOps  = time.Hour
-	pageSize = 3 << 20
-)
-
-// queue adds an op to the outbox. s.mu is held; the caller pokes the
-// client and saves once it is released.
-func (s *server) queue(o op) {
-	s.seq++
-	o.ID = s.nonce + "." + strconv.FormatInt(s.seq, 10)
-	s.outbox = append(s.outbox, held{Op: o, Queued: s.clock.Now(), seq: s.seq})
-}
-
-// readOutbox is the page after cursor. A cursor of this run lets go of the
-// ops up to it, which the bot has read; any other, such as one from before
-// a restart, gets everything still held.
-func (s *server) readOutbox(cursor string) outboxPage {
-	s.mu.Lock()
-	after, known := s.cursor(cursor)
-	now := s.clock.Now()
-	n := len(s.outbox)
-	s.outbox = slices.DeleteFunc(s.outbox, func(h held) bool {
-		return known && h.seq <= after || now.Sub(h.Queued) > keepOps
-	})
-	changed := len(s.outbox) != n
-	last := s.seq
-	if known {
-		last = after
+// queue adds ops to the outbox. GeoGuess's ops are small and have no
+// images, so the outbox never refuses them; if it did, the log says so.
+func (s *server) queue(ops ...addon.Op) {
+	if err := s.srv.Queue(ops...); err != nil {
+		s.log.Printf("an op was refused: %v", err)
 	}
-	page := outboxPage{Ops: []op{}}
-	size := 0
-	for _, h := range s.outbox {
-		data, _ := json.Marshal(h.Op)
-		if len(page.Ops) > 0 && size+len(data) > pageSize {
-			page.More = true
-			break
-		}
-		size += len(data)
-		page.Ops = append(page.Ops, h.Op)
-		last = h.seq
-	}
-	page.Cursor = s.nonce + "." + strconv.FormatInt(last, 10)
-	s.mu.Unlock()
-	if changed {
-		s.save()
-	}
-	return page
-}
-
-// cursor reads a cursor of this run: the sequence number read up to.
-// s.mu is held.
-func (s *server) cursor(c string) (int64, bool) {
-	nonce, seq, ok := strings.Cut(c, ".")
-	if !ok || nonce != s.nonce {
-		return 0, false
-	}
-	n, err := strconv.ParseInt(seq, 10, 64)
-	if err != nil || n < 0 || n > s.seq {
-		return 0, false
-	}
-	return n, true
 }

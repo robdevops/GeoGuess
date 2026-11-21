@@ -24,9 +24,11 @@ to the round's photo instead.
 
 It is a separate program that signalbot starts as an
 [MCP addon](https://github.com/robdevops/signalbot/blob/main/docs/FILES_LINKS_TOOLS_MCP.md#addons) server. It speaks MCP
-2025-06-18 over stdio (newline-delimited JSON-RPC) by hand, with signalbot's
-addon extension, and uses no MCP library. It needs no model: its commands and
-guesses never reach one.
+2025-06-18 over stdio (newline-delimited JSON-RPC), with signalbot's addon
+extension, through signalbot's own Go package for addons,
+[`github.com/robdevops/signalbot/addon`](https://github.com/robdevops/signalbot/tree/main/addon),
+and no other MCP library. It needs no model: its commands and guesses never
+reach one.
 
 ## Install
 
@@ -39,6 +41,10 @@ git clone https://github.com/robdevops/chat-plugin-geoguess.git
 cd chat-plugin-geoguess
 CGO_ENABLED=0 go build -ldflags='-s -w' -o /opt/signalbot-addons/geoguess .
 ```
+
+The build downloads signalbot's module, at the commit `go.mod` names, for
+its `addon` package; only that package, which needs nothing beyond Go's
+standard library, is built into GeoGuess.
 
 (`-ldflags='-s -w'` leaves out debug information, taking the binary from
 about 11 MB to 7.5 MB. Install it wherever you like, such as
@@ -148,28 +154,20 @@ coordinate, a place or person's name, a pseudonym or message text.
 
 ## The protocol
 
-- `initialize` advertises `tools`, `resources.subscribe` and
-  `experimental["io.github.robdevops.signalbot/addon"] = {"version": 1}`.
-  It reads the `network` the bot offers under the same key, and the round's
-  caption gives the steps for that network only (Signal's **+** button, or
-  Telegram's 📎); with none, it gives both.
-- `tools/list` has `geo` (`{args}`) and `geo_guess` (`{text}`), both with
-  `_meta["io.github.robdevops.signalbot/visibility"] = ["bot"]`, so neither is
-  offered to the model.
-- `tools/call` reads the chat, the sender, the receive times and the
-  `deadline` from `_meta["io.github.robdevops.signalbot/context"]`. A call
-  the bot cancels (`notifications/cancelled`) stops. Starting a round answers
-  with the photo, its caption and a `…/watch` for `geo_guess`, until 5s past
-  the deadline; a recorded guess answers with `…/react: "📍"`.
+The `addon` package speaks the protocol: the handshake, tool calls and
+their cancellation, and the outbox the bot reads. GeoGuess adds:
+
+- `geo` (`{args}`) and `geo_guess` (`{text}`), both for the bot alone, so
+  neither is offered to the model.
+- The caption gives the steps for the network the bot said it is on
+  (Signal's **+** button, or Telegram's 📎); with none, it gives both.
+- Starting a round answers with the photo, its caption and a watch for
+  `geo_guess`, until 5s past the deadline; a recorded guess answers with the
+  reaction 📍. `/geo` gives up in time for the bot's `deadline`.
 - When a round's time is up GeoGuess queues a `post` with the results, its
-  players as `{u_…}` placeholders, and an `unwatch`, and sends
-  `notifications/resources/updated` for `signalbot://outbox` if subscribed.
-  `/geo end` and `/geo skip` answer with the results themselves and queue
-  only the `unwatch`.
-- `resources/read` of `signalbot://outbox/<cursor>` returns
-  `{"cursor", "more", "ops"}`. A cursor is `<boot-nonce>.<seq>`; reading one of
-  this run lets go of the ops up to it, and any other cursor, such as `0` or
-  one from before a restart, gets everything still held. Op IDs survive a
-  restart, so the bot can skip those it already applied.
+  players as `{u_…}` placeholders, and an `unwatch`. `/geo end` and
+  `/geo skip` answer with the results themselves and queue only the
+  `unwatch`. Ops the bot hasn't read are saved in `geo.json`, with their
+  IDs, so they survive a restart.
 - On start, rounds still open get their timers back, and those whose time
   passed while GeoGuess was down are revealed at once.

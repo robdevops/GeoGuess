@@ -84,7 +84,7 @@ func run() int {
 	defer stop()
 	go s.prefetch(ctx)
 	done := make(chan error, 1)
-	go func() { done <- s.serve(ctx, os.Stdin, stdout) }()
+	go func() { done <- s.srv.Run(ctx, os.Stdin, stdout) }()
 	select {
 	case err = <-done:
 	case <-ctx.Done():

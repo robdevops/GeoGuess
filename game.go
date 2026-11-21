@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"slices"
 	"strconv"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"github.com/robdevops/chat-plugin-geoguess/geo"
+	"github.com/robdevops/signalbot/addon"
 )
 
 // The texts players see.
@@ -30,42 +32,52 @@ const pin = "📍"
 // round and send the photo, so it never starts one the bot won't show.
 const replyTime = 3 * time.Second
 
-// call runs one tool. Only an unknown tool is a protocol error; the rest
-// answer in words.
-func (s *server) call(ctx context.Context, p callParams) (any, error) {
-	switch p.Name {
-	case "geo":
-		var a struct {
-			Args string `json:"args"`
-		}
-		if err := params(p.Arguments, &a); err != nil {
-			return nil, err
-		}
-		return s.command(ctx, p.Meta.Context, a.Args), nil
-	case "geo_guess":
-		var a struct {
-			Text string `json:"text"`
-		}
-		if err := params(p.Arguments, &a); err != nil {
-			return nil, err
-		}
-		return s.guess(p.Meta.Context, a.Text), nil
+// tools are GeoGuess's tools, both for the bot alone: neither is offered
+// to the model.
+func (s *server) tools() []addon.Tool {
+	return []addon.Tool{
+		{
+			Name:        "geo",
+			Description: "The /geo command: start, end or skip this chat's round, or show its scores.",
+			Schema:      json.RawMessage(`{"type":"object","properties":{"args":{"type":"string"}}}`),
+			Visibility:  []string{"bot"},
+			Call: func(ctx context.Context, c *addon.Context, raw json.RawMessage) (addon.Result, error) {
+				var a struct {
+					Args string `json:"args"`
+				}
+				if err := addon.DecodeArgs(raw, &a); err != nil {
+					return addon.Result{}, err
+				}
+				return s.command(ctx, c, a.Args), nil
+			},
+		},
+		{
+			Name:        "geo_guess",
+			Description: "Records the location in one chat message as a guess in this chat's round.",
+			Schema:      json.RawMessage(`{"type":"object","properties":{"text":{"type":"string"}},"required":["text"]}`),
+			Visibility:  []string{"bot"},
+			Call: func(_ context.Context, c *addon.Context, raw json.RawMessage) (addon.Result, error) {
+				var a struct {
+					Text string `json:"text"`
+				}
+				if err := addon.DecodeArgs(raw, &a); err != nil {
+					return addon.Result{}, err
+				}
+				return s.guess(c, a.Text), nil
+			},
+		},
 	}
-	return nil, &rpcError{codeInvalidParams, "unknown tool"}
 }
 
-// text is a tool result of words alone.
-func text(s string) toolResult { return toolResult{Content: []content{{Type: "text", Text: s}}} }
-
 // fromChat reports whether c names a chat and a sender.
-func fromChat(c *callContext) bool {
+func fromChat(c *addon.Context) bool {
 	return c != nil && validID(c.Chat, "c_") && validID(c.Sender, "u_")
 }
 
 // command is /geo with its arguments.
-func (s *server) command(ctx context.Context, c *callContext, args string) toolResult {
+func (s *server) command(ctx context.Context, c *addon.Context, args string) addon.Result {
 	if !fromChat(c) {
-		return toolResult{Content: text(noChat).Content, IsError: true}
+		return addon.Result{Content: addon.Text(noChat).Content, IsError: true}
 	}
 	fields := strings.Fields(args)
 	if len(fields) == 1 {
@@ -75,7 +87,7 @@ func (s *server) command(ctx context.Context, c *callContext, args string) toolR
 		case "skip":
 			return s.finish(c, true)
 		case "scores":
-			return text(s.scoreboard(c.Chat))
+			return addon.Text(s.scoreboard(c.Chat))
 		}
 	}
 	length := s.cfg.Round
@@ -84,7 +96,7 @@ func (s *server) command(ctx context.Context, c *callContext, args string) toolR
 		if f[0] >= '0' && f[0] <= '9' {
 			d, err := roundLength(strings.ToLower(f))
 			if err != nil {
-				return text(badLength)
+				return addon.Text(badLength)
 			}
 			length = d
 			continue
@@ -94,14 +106,14 @@ func (s *server) command(ctx context.Context, c *callContext, args string) toolR
 	region := strings.Join(regions, ",")
 	if region != "" {
 		if _, err := s.regionSeeds(region); err != nil {
-			return text("I don't know that region. " + usage)
+			return addon.Text("I don't know that region. " + usage)
 		}
 	}
 	return s.start(ctx, c, length, region)
 }
 
 // busy is the answer to /geo while a round is on.
-func busy(r *round, now time.Time) toolResult {
+func busy(r *round, now time.Time) addon.Result {
 	left := max(r.Deadline.Sub(now), 0).Round(time.Second)
 	m, sec := int(left/time.Minute), int(left%time.Minute/time.Second)
 	var label string
@@ -113,12 +125,12 @@ func busy(r *round, now time.Time) toolResult {
 	default:
 		label = fmt.Sprintf("%dm%ds", m, sec)
 	}
-	return text("A round is on: " + label + " left.")
+	return addon.Text("A round is on: " + label + " left.")
 }
 
 // start begins a round in c's chat with a photo from the buffer, and
 // answers with the photo, its caption and the watch for guesses.
-func (s *server) start(ctx context.Context, c *callContext, length time.Duration, region string) toolResult {
+func (s *server) start(ctx context.Context, c *addon.Context, length time.Duration, region string) addon.Result {
 	s.mu.Lock()
 	r := s.rounds[c.Chat]
 	s.mu.Unlock()
@@ -131,7 +143,7 @@ func (s *server) start(ctx context.Context, c *callContext, length time.Duration
 	}
 	photo, ok := s.take(ctx, region, wait)
 	if !ok {
-		return text(noPhoto)
+		return addon.Text(noPhoto)
 	}
 	s.mu.Lock()
 	now := s.clock.Now()
@@ -142,7 +154,7 @@ func (s *server) start(ctx context.Context, c *callContext, length time.Duration
 		s.changed = make(chan struct{})
 		s.mu.Unlock()
 		if r == nil {
-			return text(noPhoto)
+			return addon.Text(noPhoto)
 		}
 		return busy(r, now)
 	}
@@ -155,16 +167,15 @@ func (s *server) start(ctx context.Context, c *callContext, length time.Duration
 	}
 	s.rounds[c.Chat] = r
 	s.arm(r)
-	network := s.network
 	s.mu.Unlock()
 	s.save()
 	s.log.Printf("round %s started: %s, a %s photo", r.ID, length, photo.Source)
-	return toolResult{
-		Content: []content{
+	return addon.Result{
+		Content: []addon.Content{
 			{Type: "image", Data: base64.StdEncoding.EncodeToString(photo.JPEG), MimeType: "image/jpeg"},
-			{Type: "text", Text: caption(r.Deadline, length, network)},
+			{Type: "text", Text: caption(r.Deadline, length, s.srv.Network())},
 		},
-		Meta: &resultMeta{Watch: &watch{
+		Meta: &addon.ResultMeta{Watch: &addon.Watch{
 			ID: r.ID, Pattern: geo.Pattern, Until: r.Deadline.Add(watchSlack).Format(time.RFC3339),
 			Tool: "geo_guess", Guard: guard,
 		}},
@@ -210,7 +221,6 @@ func (s *server) timeUp(chat, id string) {
 	}
 	s.timeUpLocked(r)
 	s.mu.Unlock()
-	s.poke()
 	s.save()
 }
 
@@ -218,33 +228,31 @@ func (s *server) timeUp(chat, id string) {
 // the bot to post. s.mu is held.
 func (s *server) timeUpLocked(r *round) {
 	results := s.end(r, true)
-	s.queue(op{Op: "post", Chat: r.Chat, Text: results})
-	s.queue(op{Op: "unwatch", Chat: r.Chat, Watch: r.ID})
+	s.queue(addon.Op{Op: "post", Chat: r.Chat, Text: results}, addon.Op{Op: "unwatch", Chat: r.Chat, Watch: r.ID})
 }
 
 // finish is /geo end (skip false) or /geo skip, which only the player who
 // started the round may use. It answers with the results, and queues the
 // end of the round's watch.
-func (s *server) finish(c *callContext, skip bool) toolResult {
+func (s *server) finish(c *addon.Context, skip bool) addon.Result {
 	s.mu.Lock()
 	r := s.rounds[c.Chat]
 	switch {
 	case r == nil:
 		s.mu.Unlock()
-		return text(noRound)
+		return addon.Text(noRound)
 	case r.Starter != c.Sender && skip:
 		s.mu.Unlock()
-		return text("Only the player who started this round can skip it.")
+		return addon.Text("Only the player who started this round can skip it.")
 	case r.Starter != c.Sender:
 		s.mu.Unlock()
-		return text("Only the player who started this round can end it.")
+		return addon.Text("Only the player who started this round can end it.")
 	}
 	results := s.end(r, !skip)
-	s.queue(op{Op: "unwatch", Chat: r.Chat, Watch: r.ID})
+	s.queue(addon.Op{Op: "unwatch", Chat: r.Chat, Watch: r.ID})
 	s.mu.Unlock()
-	s.poke()
 	s.save()
-	return text(results)
+	return addon.Text(results)
 }
 
 // end closes r, adding its points to the chat's scores if scored, and
@@ -339,13 +347,13 @@ func medal(rank int) string {
 // guess records the location in a chat message as its sender's guess in
 // the chat's round: only how far it is from the answer, never where it is.
 // A recorded guess answers with a pin for the bot to react with.
-func (s *server) guess(c *callContext, msg string) toolResult {
+func (s *server) guess(c *addon.Context, msg string) addon.Result {
 	if !fromChat(c) {
-		return text(noChat)
+		return addon.Text(noChat)
 	}
 	p, ok := geo.Parse(msg)
 	if !ok {
-		return text("No location found.")
+		return addon.Text("No location found.")
 	}
 	at := s.clock.Now()
 	if t := cmp.Or(c.Edited, c.Sent); t > 0 {
@@ -356,18 +364,18 @@ func (s *server) guess(c *callContext, msg string) toolResult {
 	switch {
 	case r == nil:
 		s.mu.Unlock()
-		return text(noRound)
+		return addon.Text(noRound)
 	case c.Sent > 0 && c.Sent < r.Started.Unix():
 		s.mu.Unlock()
-		return text("That message is from before this round.")
+		return addon.Text("That message is from before this round.")
 	case at.After(r.Deadline):
 		s.mu.Unlock()
-		return text("Too late for this round.")
+		return addon.Text("Too late for this round.")
 	}
 	r.Guesses[c.Sender] = guess{Km: geo.Km(p, r.Answer), At: at}
 	s.mu.Unlock()
 	s.save()
-	return toolResult{Content: text("Recorded.").Content, Meta: &resultMeta{React: pin}}
+	return addon.Result{Content: addon.Text("Recorded.").Content, Meta: &addon.ResultMeta{React: pin}}
 }
 
 // scoreboard is /geo scores: the chat's totals over the last scoreDays.

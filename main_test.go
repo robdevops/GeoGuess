@@ -192,7 +192,7 @@ func connect(t *testing.T, s *server) *client {
 		s.prefetch(ctx)
 	}()
 	go func() {
-		err := s.serve(ctx, inR, outW)
+		err := s.srv.Run(ctx, inR, outW)
 		outW.Close()
 		c.served <- err
 	}()
@@ -642,12 +642,13 @@ func TestUnknownCursor(t *testing.T) {
 	c.geo("30s", from(clk, chat, alice))
 	clk.Advance(30*time.Second + settle)
 	c.note()
-	for _, cursor := range []string{"0", "k7f2.18", "garbage", c.s.nonce + ".99", c.s.nonce + ".-1"} {
+	nonce, _, _ := strings.Cut(c.outbox("0").Cursor, ".") // this run's
+	for _, cursor := range []string{"0", "k7f2.18", "garbage", nonce + ".99", nonce + ".-1"} {
 		if p := c.outbox(cursor); len(p.Ops) != 2 {
 			t.Errorf("cursor %q: %+v", cursor, p)
 		}
 	}
-	p := c.outbox(c.s.nonce + ".1") // read the post, not the unwatch
+	p := c.outbox(nonce + ".1") // read the post, not the unwatch
 	if len(p.Ops) != 1 || p.Ops[0].Op != "unwatch" {
 		t.Errorf("after the post: %+v", p)
 	}
