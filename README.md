@@ -7,21 +7,25 @@ pin, confirm on Signal, and send), or typed
 coordinates such as `-37.81, 144.96`; when time is up the
 bot names the place and ranks players by how far off they were.
 
-A game is 3 rounds, 3 photos. Round 1 runs its full time, and whoever
-guesses in it is playing; from round 2 on, a round ends as soon as all of
-them have guessed (3s later, for guesses still on their way), so a game
-goes as fast as its players. Someone who joins later still scores, but
-isn't waited for. Each round's results come out when it ends, then, 5
-seconds later so they can be read, the next photo, whose time starts then.
+A game is 3 rounds, 3 photos. A round ends at its time, or as soon as all
+the game's players have guessed (3s later, for guesses still on their
+way), so a game goes as fast as its players. Anyone else may still guess
+and score, but isn't waited for. Each round's results come out when it
+ends, then, 5 seconds later so they can be read, the next photo, whose
+time starts then.
 
 In a group, a game starts with a lobby: react to `/geo`'s answer with any
-emoji to join (take the reaction back to leave). It starts 30 seconds after
-the last player joins, once there are at least 2 of you, and is called off
-if fewer than 2 have joined after 5 minutes; whoever starts it is in already, so one other player is enough.
-Those who joined are the players every round waits for, from round 1;
-anyone may still guess. In a DM it starts at once. On Telegram the bot sees
-reactions only as the group's admin; a bot older than signalbot fe51891
-starts the game at once.
+emoji to join (take the reaction back to leave). Whoever starts it is in
+already, so one other player is enough. It starts 30 seconds after the last
+player joins, once there are at least 2 of you, and is called off if fewer
+than 2 have joined after 5 minutes. On Telegram the bot sees reactions only
+as the group's admin, so without that nobody can join. In a DM there's no
+lobby: the game starts at once, and a round ends as soon as you guess.
+
+For an hour after a game ends, however it ended, a reply to one of its
+messages (in a DM, one of its photos) that asks the bot gets "That game is
+over. Start another with /geo." instead of the model's answer. The bot keeps
+this in memory only, so a restart forgets it.
 
 Best of 3 wins: the nearest guess wins a round, and whoever wins the most
 rounds wins the game, with points shown alongside. All 3 rounds are
@@ -33,7 +37,7 @@ they have all guessed. If none of them wins it, points decide.
 /geo                 start a game (rounds of GEO_ROUND, default 3 minutes)
 /geo 90s | /geo 5m   start a game with rounds of that length (30s to 30m; the game, with a possible tie-breaker, at most 50 minutes)
 /geo europe          a game in a continent or countries (/geo AU,NZ); combines with a length
-/geo end, /geo stop   finish now, revealing the round and the totals (only the player who started it)
+/geo end, /geo stop  finish now, revealing the round and the totals, or call off the lobby (only the player who started it)
 /geo skip            skip this round without scoring, on to the next (only the player who started it)
 /geo scores          this chat's totals over the last 7 days
 ```
@@ -54,9 +58,9 @@ reach one.
 
 ## Install
 
-It needs a signalbot with MCP addon support. Get the code and build it with
-Go 1.27 or newer, as a static binary, which the Docker image needs (it has no shell
-or runtimes) and systemd is happy with:
+It needs signalbot main at d685491 or newer. Get the code and build it with
+Go 1.27 or newer, as a static binary, which the Docker image needs (it has
+no shell or runtimes) and systemd is happy with:
 
 ```
 git clone https://github.com/robdevops/chat-plugin-geoguess.git
@@ -91,8 +95,10 @@ which is what gives it the `GEO_` settings below:
 
 `chats` takes the groups' IDs as Signal or Telegram shows them, or `["all"]`;
 add `"dms": true` to play in DMs too. GeoGuess needs `post` (for the results),
-`react` (the 📍 on a counted guess) and `watch` (to read guesses). A round
-lasts at most 30 minutes, so the default `watch_max` of 1h is enough. The
+`react` (the 📍 on a counted guess) and `watch` (to read guesses and the
+lobby's reactions). A game's watch lasts at most 55 minutes and 5 seconds
+(a lobby's 5 minutes, then at most 50 for the game), so the default
+`watch_max` of 1h is enough. The
 `timeout` lets `/geo` wait for a photo when none is ready: keep it above
 `GEO_WAIT` (50s by default). GeoGuess never waits past the bot's timeout
 anyway, less a few seconds to send the photo, and starts no round the bot has
@@ -141,12 +147,13 @@ TLS 1.3.
 ## Privacy
 
 GeoGuess gets only what signalbot's addon block allows: the text after
-`/geo`, and during a round the messages that look like a location (a map link
-or coordinates), each with the chat and sender as pseudonyms and the time the
-bot got it. It never sees a phone number, account ID, group ID or, unless
-`names` is set, a display name; it writes players as `{u_…}` and the bot puts
-their names in. Guesses are claimed by the bot, so they are never answered,
-sent to the model or kept in the chat's history.
+`/geo`, and during a game the messages that look like a location (a map link
+or coordinates) and the emoji put on or taken off its messages, each with
+the chat and sender as pseudonyms and the time the bot got it. It never sees
+a phone number, account ID, group ID or, unless `names` is set, a display
+name; it writes players as `{u_…}` and the bot puts their names in. Guesses
+are claimed by the bot, so they are never answered, sent to the model or
+kept in the chat's history.
 
 What it sends out is about photos, never about players: map areas to search
 and photo IDs to Mapillary and Panoramax, and the answer's coordinates to
@@ -160,16 +167,18 @@ keeps only its distance anyway.
 
 `$GEO_STATE_DIR/geo.json`, rewritten whole on each change:
 
-- open rounds: the chat's pseudonym, who started it, its deadline, the answer
-  and its credit, and for each player (a per-chat pseudonym) only how far
-  their last guess was and when. Where anyone guessed is never kept, in
-  memory or on disk;
+- open games: the chat's pseudonym, who started it, who joined its lobby
+  and who it waits for, its points and round wins so far, the open round's
+  deadline, answer and credit, and for each player (a per-chat pseudonym)
+  only how far their last guess was and when. Where anyone guessed is never
+  kept, in memory or on disk;
 - the keys of the last 1,000 photos used, so none comes round again soon;
 - 7 days of points per chat, by player pseudonym;
 - outbox ops the bot hasn't read yet, for at most an hour.
 
 `$GEO_STATE_DIR/geoguess.log` (moved to `geoguess.log.1` past 4 MiB at start)
-records rounds started and revealed with their guess counts, photos
+records lobbies and their player counts, rounds started, ended early and
+revealed with their guess counts, photos
 rejected by reason, and API errors by status. It never holds a guess, a
 coordinate, a place or person's name, a pseudonym or message text.
 
@@ -178,19 +187,23 @@ coordinate, a place or person's name, a pseudonym or message text.
 The `addon` package speaks the protocol: the handshake, tool calls and
 their cancellation, and the outbox the bot reads. GeoGuess adds:
 
-- `geo` (`{args}`) and `geo_guess` (`{text}`), both for the bot alone, so
-  neither is offered to the model.
+- `geo` (`{args}`) and `geo_guess` (`{text}`, or `{reaction, removed}` for
+  a reaction), both for the bot alone, so neither is offered to the model.
 - The caption gives the steps for the network the bot said it is on
   (Signal's **+** button, or Telegram's 📎); with none, it gives both.
-- Starting a game answers with round 1's photo, its caption and one watch
-  for `geo_guess` for the whole game, until 5s past its latest end; a
+- Starting a game answers with one watch for `geo_guess` for the whole game,
+  until 5s past its latest end, with `guard` "No hints during a round 😉" and
+  `over` "That game is over. Start another with /geo.". In a DM the answer
+  is round 1's photo and its caption. In a group, if the bot says it takes
+  `watchReactions`, it is the lobby's intro and the watch has `reactions`;
+  round 1's photo follows as a `post` when the lobby starts the game. A
   recorded guess answers with the reaction 📍. `/geo` gives up in time for
   the bot's `deadline`.
 - When a round ends GeoGuess queues a `post` with the results, its players
   as `{u_…}` placeholders, then the next round's photo as a `post` with the
   image (from the buffer, waiting up to `GEO_WAIT`); after the last round,
-  the totals and an `unwatch`. `/geo end` and `/geo skip` answer with the
-  results themselves. Ops the bot hasn't read are saved in `geo.json`, with their
-  IDs, so they survive a restart.
-- On start, rounds still open get their timers back, and those whose time
-  passed while GeoGuess was down are revealed at once.
+  the totals and an `unwatch`. `/geo end` (or `stop`) and `/geo skip` answer
+  with the results themselves. Ops the bot hasn't read are saved in
+  `geo.json`, with their IDs, so they survive a restart.
+- On start, games still open get their timers back (a lobby's too), and
+  rounds whose time passed while GeoGuess was down are revealed at once.
