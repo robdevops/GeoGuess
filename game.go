@@ -199,7 +199,7 @@ func (s *server) start(ctx context.Context, c *addon.Context, length time.Durati
 			Content: addon.Text(lobbyIntro(r)).Content,
 			Meta: &addon.ResultMeta{Watch: &addon.Watch{
 				ID: r.ID, Pattern: geo.Pattern, Until: r.Until.Add(watchSlack).Format(time.RFC3339),
-				Tool: "geo_guess", Guard: guard, Reactions: true,
+				Tool: "geo_guess", Guard: guard, Over: "That game is over. Start another with /geo.", Reactions: true,
 			}},
 		}
 	}
@@ -217,7 +217,7 @@ func (s *server) start(ctx context.Context, c *addon.Context, length time.Durati
 		},
 		Meta: &addon.ResultMeta{Watch: &addon.Watch{
 			ID: r.ID, Pattern: geo.Pattern, Until: r.Until.Add(watchSlack).Format(time.RFC3339),
-			Tool: "geo_guess", Guard: guard,
+			Tool: "geo_guess", Guard: guard, Over: "That game is over. Start another with /geo.",
 		}},
 	}
 }
