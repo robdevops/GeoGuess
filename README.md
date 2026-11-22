@@ -14,6 +14,15 @@ goes as fast as its players. Someone who joins later still scores, but
 isn't waited for. Each round's results come out when it ends, then, 5
 seconds later so they can be read, the next photo, whose time starts then.
 
+In a group, a game starts with a lobby: react to `/geo`'s answer with any
+emoji to join (take the reaction back to leave). It starts 30 seconds after
+the last player joins, once there are at least 2 of you, and is called off
+if fewer than 2 have joined after 5 minutes; whoever starts it has joined.
+Those who joined are the players every round waits for, from round 1;
+anyone may still guess. In a DM it starts at once. On Telegram the bot sees
+reactions only as the group's admin; a bot older than signalbot fe51891
+starts the game at once.
+
 Best of 3 wins: the nearest guess wins a round, and whoever wins the most
 rounds wins the game, with points shown alongside. All 3 rounds are
 played. If the top players are tied on wins, a tie-breaker round follows:
@@ -22,7 +31,7 @@ they have all guessed. If none of them wins it, points decide.
 
 ```
 /geo                 start a game (rounds of GEO_ROUND, default 3 minutes)
-/geo 90s | /geo 5m   start a game with rounds of that length (30s to 30m; the game, with a possible tie-breaker, at most 55 minutes)
+/geo 90s | /geo 5m   start a game with rounds of that length (30s to 30m; the game, with a possible tie-breaker, at most 50 minutes)
 /geo europe          a game in a continent or countries (/geo AU,NZ); combines with a length
 /geo end             finish now, revealing the round and the totals (only the player who started it)
 /geo skip            skip this round without scoring, on to the next (only the player who started it)

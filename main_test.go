@@ -1262,3 +1262,62 @@ func TestGameGap(t *testing.T) {
 	}
 	c.s.mu.Unlock()
 }
+
+// In a group, with a bot that passes reactions, /geo answers with a lobby;
+// round 1's photo comes 30s after the last join once there are 2, as a
+// post with its image; the joined are the players; fewer than 2 after 5
+// minutes calls it off; a DM starts at once with the photo.
+func TestGeoLobby(t *testing.T) {
+	clk := &fakeClock{now: time.Date(2026, 11, 20, 14, 0, 0, 0, time.UTC)}
+	logs := &syncBuffer{}
+	c := connect(t, testServer(t, t.TempDir(), clk, &fakeFinder{}, logs))
+	c.result("initialize", map[string]any{
+		"protocolVersion": protocolVersion, "clientInfo": map[string]string{"name": "signalbot", "version": "1"},
+		"capabilities": map[string]any{"experimental": map[string]any{vendor + "addon": map[string]any{"version": 1, "watchReactions": true}}},
+	}, new(initializeResult))
+	c.send(`{"jsonrpc":"2.0","method":"notifications/initialized"}`)
+	c.result("resources/subscribe", uriParams{outboxURI}, new(struct{}))
+	c.s.perGame = 3
+	react := func(removed bool, ctx callContext) {
+		t.Helper()
+		c.result("tools/call", map[string]any{"name": "geo_guess", "arguments": map[string]any{"reaction": "👍", "removed": removed},
+			"_meta": map[string]any{vendor + "context": ctx}}, new(toolResult))
+	}
+	r := c.geo("1m", from(clk, chat, alice))
+	if !strings.Contains(words(r), "React to this message with any emoji to join.") || len(r.Content) != 1 || !r.Meta.Watch.Reactions || r.Meta.Watch.Pattern != geo.Pattern {
+		t.Fatalf("lobby %+v", r)
+	}
+	if g := c.guess("-37.6, 143.9", from(clk, chat, bob)); words(g) != "The game hasn't started yet." {
+		t.Errorf("a guess in the lobby: %q", words(g))
+	}
+	react(false, from(clk, chat, bob))
+	clk.Advance(29 * time.Second)
+	if p := c.outbox("0"); len(p.Ops) != 0 {
+		t.Fatalf("a photo before the lobby ended: %+v", p)
+	}
+	clk.Advance(time.Second)
+	waitFor(t, c.s, "round 1", func() bool { r := c.s.rounds[chat]; return r != nil && r.Number == 1 && !r.Waiting })
+	page := c.outbox("0")
+	if len(page.Ops) != 1 || !strings.HasPrefix(page.Ops[0].Text, "**Round 1 of 3** · 🌍") || len(page.Ops[0].Images) != 1 {
+		t.Fatalf("round 1 %+v", page)
+	}
+	c.s.mu.Lock()
+	if p := c.s.rounds[chat].Players; !slices.Equal(p, []string{alice, bob}) {
+		t.Errorf("players %v", p)
+	}
+	c.s.mu.Unlock()
+	// Round 1 ends once both have guessed.
+	c.guess("-37.6, 143.9", from(clk, chat, alice))
+	c.guess("-37.6, 143.95", from(clk, chat, bob))
+	clk.Advance(settle)
+	waitFor(t, c.s, "round 2", func() bool { r := c.s.rounds[chat]; return r != nil && r.Number == 2 })
+
+	c.geo("1m", from(clk, "c_two", alice))
+	clk.Advance(lobbyMax)
+	waitFor(t, c.s, "the call-off", func() bool { return c.s.rounds["c_two"] == nil })
+	dm := from(clk, "c_dm", alice)
+	dm.Group = false
+	if r := c.geo("1m", dm); len(r.Content) != 2 || r.Content[0].Type != "image" {
+		t.Errorf("a DM has a lobby: %+v", words(r))
+	}
+}

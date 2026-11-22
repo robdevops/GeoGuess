@@ -5,7 +5,7 @@ go 1.27.0
 toolchain go1.27.3
 
 require (
-	github.com/robdevops/signalbot v0.0.0-20261121131851-a9aa407e4a8a
+	github.com/robdevops/signalbot v0.0.0-20261122060408-fe518917ad74
 	golang.org/x/image v0.47.0
 )
 

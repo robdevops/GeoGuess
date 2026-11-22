@@ -56,17 +56,21 @@ type round struct {
 	Credit   credit           `json:"credit"`
 	Guesses  map[string]guess `json:"guesses"` // by player
 
-	Number  int            `json:"number,omitempty"`  // the open round, from 1
-	Of      int            `json:"of,omitempty"`      // the game's rounds; 0, a round saved before games, is 1
-	Region  string         `json:"region,omitempty"`  // the game's
-	Length  time.Duration  `json:"length,omitempty"`  // each round's
-	Until   time.Time      `json:"until,omitempty"`   // when the game's watch ends, less its slack
-	Players []string       `json:"players,omitempty"` // who guessed in round 1: a later round ends once they all have
-	Totals  map[string]int `json:"totals,omitempty"`  // the game's points so far, by player
-	Wins    map[string]int `json:"wins,omitempty"`    // rounds won so far, by player
-	Tie     []string       `json:"tie,omitempty"`     // in a tie-breaker round, the players tied for the win
-	Waiting bool           `json:"waiting,omitempty"` // between rounds, for the next photo
-	Closed  time.Time      `json:"closed,omitempty"`  // when the last round ended: the next photo waits gapTime after it
+	Number   int            `json:"number,omitempty"`   // the open round, from 1
+	Of       int            `json:"of,omitempty"`       // the game's rounds; 0, a round saved before games, is 1
+	Region   string         `json:"region,omitempty"`   // the game's
+	Length   time.Duration  `json:"length,omitempty"`   // each round's
+	Until    time.Time      `json:"until,omitempty"`    // when the game's watch ends, less its slack
+	Players  []string       `json:"players,omitempty"`  // who guessed in round 1: a later round ends once they all have
+	Totals   map[string]int `json:"totals,omitempty"`   // the game's points so far, by player
+	Wins     map[string]int `json:"wins,omitempty"`     // rounds won so far, by player
+	Tie      []string       `json:"tie,omitempty"`      // in a tie-breaker round, the players tied for the win
+	Waiting  bool           `json:"waiting,omitempty"`  // between rounds, for the next photo
+	Closed   time.Time      `json:"closed,omitempty"`   // when the last round ended: the next photo waits gapTime after it
+	Lobby    bool           `json:"lobby,omitempty"`    // waiting for players to join by reacting to the intro
+	Joined   []string       `json:"joined,omitempty"`   // who has joined, the starter first
+	LastJoin time.Time      `json:"lastJoin,omitempty"` // when the last player joined: the game starts lobbyWait after
+	CallOff  time.Time      `json:"callOff,omitempty"`  // when the lobby gives up with fewer than minPlayers
 }
 
 // of is the rounds in r's game.
@@ -120,7 +124,13 @@ const (
 	// gapTime is the pause between a round's results and the next photo,
 	// so players can read the results.
 	gapTime = 5 * time.Second
-	maxGame = 55 * time.Minute
+	maxGame = 50 * time.Minute
+	// The lobby: how long after the last join the game starts, the players
+	// it needs, and how long it waits for them, within the watch's hour
+	// with maxGame.
+	lobbyWait  = 30 * time.Second
+	minPlayers = 2
+	lobbyMax   = 5 * time.Minute
 )
 
 // newServer loads the state saved in cfg.StateDir, re-arms its rounds'
@@ -160,6 +170,8 @@ func newServer(cfg config, clk clock, photos finder, logger *log.Logger) (*serve
 		}
 		s.rounds[r.Chat] = r
 		switch {
+		case r.Lobby:
+			s.armLobby(r)
 		case r.Waiting: // for its next photo
 			go s.nextRound(r.Chat, r.ID, r.Number+1)
 		case !s.clock.Now().Before(r.Deadline.Add(settle)):

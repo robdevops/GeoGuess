@@ -60,10 +60,15 @@ func (s *server) tools() []addon.Tool {
 			Visibility:  []string{"bot"},
 			Call: func(_ context.Context, c *addon.Context, raw json.RawMessage) (addon.Result, error) {
 				var a struct {
-					Text string `json:"text"`
+					Text     string `json:"text"`
+					Reaction string `json:"reaction"` // a reaction to the game's messages: a join, in the lobby
+					Removed  bool   `json:"removed"`
 				}
 				if err := addon.DecodeArgs(raw, &a); err != nil {
 					return addon.Result{}, err
+				}
+				if a.Reaction != "" {
+					return s.reacted(c, a.Removed), nil
 				}
 				return s.guess(c, a.Text), nil
 			},
@@ -119,6 +124,9 @@ func (s *server) command(ctx context.Context, c *addon.Context, args string) add
 
 // busy is the answer to /geo while a game is on.
 func busy(r *round, now time.Time) addon.Result {
+	if r.Lobby {
+		return addon.Text("A game is about to start: react to its intro to join.")
+	}
 	if r.Waiting {
 		return addon.Text(fmt.Sprintf("A game is on: round %d's photo is on its way.", r.Number+1))
 	}
@@ -177,6 +185,24 @@ func (s *server) start(ctx context.Context, c *addon.Context, length time.Durati
 		Until: now.Add(gameTime(of, length, s.cfg.Wait+s.cfg.gap)),
 	}
 	s.rounds[c.Chat] = r
+	if c.Group && s.srv.WatchReactions() { // players join by reacting to the intro first; the photo waits
+		s.buffer = append([]geo.Photo{photo}, s.buffer...)
+		close(s.changed)
+		s.changed = make(chan struct{})
+		r.Lobby, r.Number, r.Joined, r.CallOff = true, 0, []string{c.Sender}, now.Add(lobbyMax)
+		r.Until = r.Until.Add(lobbyMax)
+		s.armLobby(r)
+		s.mu.Unlock()
+		s.save()
+		s.log.Printf("game %s waiting for players", r.ID)
+		return addon.Result{
+			Content: addon.Text(lobbyIntro(r)).Content,
+			Meta: &addon.ResultMeta{Watch: &addon.Watch{
+				ID: r.ID, Pattern: geo.Pattern, Until: r.Until.Add(watchSlack).Format(time.RFC3339),
+				Tool: "geo_guess", Guard: guard, Reactions: true,
+			}},
+		}
+	}
 	s.arm(r)
 	s.mu.Unlock()
 	s.save()
@@ -461,6 +487,11 @@ func (s *server) finish(c *addon.Context, skip bool) addon.Result {
 	case r.Starter != c.Sender:
 		s.mu.Unlock()
 		return addon.Text("Only the player who started this round can end it.")
+	case r.Lobby:
+		s.callOffLocked(r, "")
+		s.mu.Unlock()
+		s.save()
+		return addon.Text("The game is off.")
 	}
 	var text string
 	switch {
@@ -494,7 +525,7 @@ func (s *server) closeRound(r *round, scored bool) string {
 		t.Stop()
 		delete(s.timers, r.Chat)
 	}
-	if r.Number <= 1 {
+	if r.Number <= 1 && len(r.Players) == 0 { // no lobby: round 1's guessers are the game's players
 		r.Players = slices.Sorted(maps.Keys(r.Guesses))
 	}
 	guesses := make([]geo.Guess, 0, len(r.Guesses))
@@ -612,6 +643,9 @@ func (s *server) guess(c *addon.Context, msg string) addon.Result {
 	case r == nil:
 		s.mu.Unlock()
 		return addon.Text(noRound)
+	case r.Lobby:
+		s.mu.Unlock()
+		return addon.Text("The game hasn't started yet.")
 	case c.Sent > 0 && c.Sent < r.Started.Unix():
 		s.mu.Unlock()
 		return addon.Text("That message is from before this round.")
@@ -632,6 +666,89 @@ func (s *server) guess(c *addon.Context, msg string) addon.Result {
 	return addon.Result{Content: addon.Text("Recorded.").Content, Meta: &addon.ResultMeta{React: pin}}
 }
 
+// lobbyIntro is /geo's answer in a group: the game, and how to join.
+func lobbyIntro(r *round) string {
+	return fmt.Sprintf("🌍 **GeoGuess** · %d rounds of %s: guess where each photo was taken.\n"+
+		"👋 **React to this message with any emoji to join.** The game starts 30 seconds after the last player joins, once there are at least %d of you; a round ends as soon as everyone who joined has guessed.",
+		r.of(), lengthLabel(r.Length), minPlayers)
+}
+
+// reacted is a reaction to the game's messages: in the lobby, a player
+// joining, or leaving if removed (the starter stays); after it, nothing.
+func (s *server) reacted(c *addon.Context, removed bool) addon.Result {
+	if !fromChat(c) {
+		return addon.Text(noChat)
+	}
+	s.mu.Lock()
+	r := s.rounds[c.Chat]
+	if r == nil || !r.Lobby {
+		s.mu.Unlock()
+		return addon.Text("Noted.")
+	}
+	in := slices.Contains(r.Joined, c.Sender)
+	switch {
+	case !removed && !in:
+		r.Joined = append(r.Joined, c.Sender)
+		r.LastJoin = s.clock.Now()
+	case removed && in && c.Sender != r.Starter:
+		r.Joined = slices.DeleteFunc(r.Joined, func(u string) bool { return u == c.Sender })
+	default:
+		s.mu.Unlock()
+		return addon.Text("Noted.")
+	}
+	s.armLobby(r)
+	s.mu.Unlock()
+	s.save()
+	return addon.Text("Noted.")
+}
+
+// armLobby sets r's lobby timer: with enough players, to start lobbyWait
+// after the last join; else to call the game off at CallOff. s.mu is held.
+func (s *server) armLobby(r *round) {
+	at := r.CallOff
+	if len(r.Joined) >= minPlayers {
+		at = r.LastJoin.Add(lobbyWait)
+	}
+	chat, id := r.Chat, r.ID
+	if t := s.timers[chat]; t != nil {
+		t.Stop()
+	}
+	s.timers[chat] = s.clock.AfterFunc(max(at.Sub(s.clock.Now()), 0), func() {
+		s.mu.Lock()
+		r := s.rounds[chat]
+		if r == nil || r.ID != id || !r.Lobby {
+			s.mu.Unlock()
+			return
+		}
+		now := s.clock.Now()
+		switch {
+		case len(r.Joined) >= minPlayers && !now.Before(r.LastJoin.Add(lobbyWait)):
+			// Round 1's photo comes now, as a later round's does, with no pause.
+			r.Lobby, r.Players = false, slices.Clone(r.Joined)
+			r.Waiting, r.Closed = true, now.Add(-s.cfg.gap)
+			delete(s.timers, chat)
+			s.log.Printf("game %s began: %d players", r.ID, len(r.Players))
+			go s.nextRound(chat, id, 1)
+		case len(r.Joined) < minPlayers && !now.Before(r.CallOff):
+			s.callOffLocked(r, "Not enough players joined, so the game is off.")
+		default:
+			s.armLobby(r)
+		}
+		s.mu.Unlock()
+		s.save()
+	})
+}
+
+// callOffLocked ends r's game in its lobby, saying why if why isn't "", and
+// ends its watch. s.mu is held.
+func (s *server) callOffLocked(r *round, why string) {
+	if why != "" {
+		s.queue(addon.Op{Op: "post", Chat: r.Chat, Text: why})
+	}
+	s.log.Printf("game %s called off in its lobby: %d joined", r.ID, len(r.Joined))
+	s.endGame(r)
+}
+
 // allGuessed reports whether a round after the first has a guess from
 // each player of round 1, and is still before its deadline. s.mu is held.
 func (s *server) allGuessed(r *round) bool {
@@ -639,7 +756,7 @@ func (s *server) allGuessed(r *round) bool {
 	if len(r.Tie) > 0 {
 		players = r.Tie
 	}
-	if r.Number <= 1 || len(players) == 0 || !s.clock.Now().Before(r.Deadline) {
+	if len(players) == 0 || !s.clock.Now().Before(r.Deadline) { // none yet, in round 1 without a lobby
 		return false
 	}
 	for _, p := range players {
