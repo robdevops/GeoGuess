@@ -33,7 +33,7 @@ they have all guessed. If none of them wins it, points decide.
 /geo                 start a game (rounds of GEO_ROUND, default 3 minutes)
 /geo 90s | /geo 5m   start a game with rounds of that length (30s to 30m; the game, with a possible tie-breaker, at most 50 minutes)
 /geo europe          a game in a continent or countries (/geo AU,NZ); combines with a length
-/geo end             finish now, revealing the round and the totals (only the player who started it)
+/geo end, /geo stop   finish now, revealing the round and the totals (only the player who started it)
 /geo skip            skip this round without scoring, on to the next (only the player who started it)
 /geo scores          this chat's totals over the last 7 days
 ```

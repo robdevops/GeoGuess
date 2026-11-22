@@ -890,7 +890,7 @@ func TestKeep(t *testing.T) {
 	}
 	photos.mu.Unlock()
 
-	if got := words(c.geo("end", from(clk, chat, alice))); got != noRound {
+	if got := words(c.geo("stop", from(clk, chat, alice))); got != noRound {
 		t.Errorf("end with no round: %q", got)
 	}
 	r := c.geo("AU 2m", from(clk, chat, alice))
