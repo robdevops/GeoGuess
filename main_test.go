@@ -1334,3 +1334,32 @@ func TestDMEndsEarly(t *testing.T) {
 	clk.Advance(settle)
 	waitFor(t, c.s, "round 2", func() bool { r := c.s.rounds["c_dm"]; return r != nil && r.Number == 2 })
 }
+
+// Whoever guesses joins the players: a newcomer's guess in round 1 makes
+// round 2 wait for them too.
+func TestNewcomerIsWaitedFor(t *testing.T) {
+	clk, c, _ := start(t)
+	c.s.perGame = 3
+	dm := func(user string) callContext { // Alice alone at first: she is the one player
+		ctx := from(clk, chat, user)
+		ctx.Group = false
+		return ctx
+	}
+	c.geo("1m", dm(alice))
+	c.guess("-37.6, 143.95", dm(bob)) // Bob joins in
+	c.guess("-37.6, 143.9", dm(alice))
+	clk.Advance(settle)
+	waitFor(t, c.s, "round 2", func() bool { r := c.s.rounds[chat]; return r != nil && r.Number == 2 && !r.Waiting })
+	clk.Advance(time.Second)
+	c.guess("-37.6, 143.9", dm(alice))
+	clk.Advance(settle)
+	c.s.mu.Lock()
+	still := c.s.rounds[chat].Number == 2 && !c.s.rounds[chat].Waiting
+	c.s.mu.Unlock()
+	if !still {
+		t.Error("round 2 ended without Bob's guess")
+	}
+	c.guess("-37.6, 143.95", dm(bob))
+	clk.Advance(settle)
+	waitFor(t, c.s, "round 3", func() bool { r := c.s.rounds[chat]; return r != nil && r.Number == 3 })
+}

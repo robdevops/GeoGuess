@@ -657,6 +657,9 @@ func (s *server) guess(c *addon.Context, msg string) addon.Result {
 		return addon.Text("Too late for this round.")
 	}
 	r.Guesses[c.Sender] = guess{Km: geo.Km(p, r.Answer), At: at}
+	if len(r.Players) > 0 && !slices.Contains(r.Players, c.Sender) {
+		r.Players = append(r.Players, c.Sender) // whoever answers is waited for from the next one on
+	}
 	if s.allGuessed(r) {
 		// Everyone playing has guessed: end the round now, revealing it after
 		// settle, as at its deadline, for guesses still on their way.
