@@ -1321,3 +1321,16 @@ func TestGeoLobby(t *testing.T) {
 		t.Errorf("a DM has a lobby: %+v", words(r))
 	}
 }
+
+// In a DM the starter is the one player: a round ends as soon as they
+// guess, from round 1.
+func TestDMEndsEarly(t *testing.T) {
+	clk, c, _ := start(t)
+	c.s.perGame = 3
+	dm := from(clk, "c_dm", alice)
+	dm.Group = false
+	c.geo("1m", dm)
+	c.guess("-37.6, 143.9", dm)
+	clk.Advance(settle)
+	waitFor(t, c.s, "round 2", func() bool { r := c.s.rounds["c_dm"]; return r != nil && r.Number == 2 })
+}

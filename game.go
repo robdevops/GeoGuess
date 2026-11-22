@@ -203,6 +203,9 @@ func (s *server) start(ctx context.Context, c *addon.Context, length time.Durati
 			}},
 		}
 	}
+	if !c.Group { // a DM: its one player, so no round waits for the timer
+		r.Players = []string{c.Sender}
+	}
 	s.arm(r)
 	s.mu.Unlock()
 	s.save()
