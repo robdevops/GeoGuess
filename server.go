@@ -66,6 +66,7 @@ type round struct {
 	Wins    map[string]int `json:"wins,omitempty"`    // rounds won so far, by player
 	Tie     []string       `json:"tie,omitempty"`     // in a tie-breaker round, the players tied for the win
 	Waiting bool           `json:"waiting,omitempty"` // between rounds, for the next photo
+	Closed  time.Time      `json:"closed,omitempty"`  // when the last round ended: the next photo waits gapTime after it
 }
 
 // of is the rounds in r's game.
@@ -116,7 +117,10 @@ const (
 	// may run, with its waits for photos: within the bot's default
 	// watch_max of 1h.
 	gameRounds = 3
-	maxGame    = 55 * time.Minute
+	// gapTime is the pause between a round's results and the next photo,
+	// so players can read the results.
+	gapTime = 5 * time.Second
+	maxGame = 55 * time.Minute
 )
 
 // newServer loads the state saved in cfg.StateDir, re-arms its rounds'

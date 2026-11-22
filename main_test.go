@@ -172,6 +172,9 @@ func testServer(t *testing.T, dir string, clk clock, photos finder, logs io.Writ
 	if err != nil {
 		t.Fatal(err)
 	}
+	if vars["gap"] == "" {
+		cfg.gap = 0 // the next photo at once; TestGameGap has the pause
+	}
 	s, err := newServer(cfg, clk, photos, log.New(logs, "", 0))
 	if err != nil {
 		t.Fatal(err)
@@ -1218,4 +1221,44 @@ func TestGameTieBreaker(t *testing.T) {
 		!strings.Contains(page.Ops[len(page.Ops)-2].Text, "🏁 **Game over**: 🏆 {u_alice} wins!\n🥇 {u_alice} 2 wins · ") {
 		t.Errorf("the end %+v", page)
 	}
+}
+
+// With the pause, a round's results go out at once and the next photo 5s
+// later, with the round's full time; a guess in between counts for
+// nothing.
+func TestGameGap(t *testing.T) {
+	clk := &fakeClock{now: time.Date(2026, 11, 20, 14, 0, 0, 0, time.UTC)}
+	var logs syncBuffer
+	c := connect(t, testServer(t, t.TempDir(), clk, &fakeFinder{}, &logs, "gap", "on"))
+	c.result("initialize", map[string]any{"protocolVersion": protocolVersion, "capabilities": map[string]any{}}, new(initializeResult))
+	c.send(`{"jsonrpc":"2.0","method":"notifications/initialized"}`)
+	c.result("resources/subscribe", uriParams{outboxURI}, new(struct{}))
+	c.s.perGame = 3
+	began := clk.Now()
+	r := c.geo("1m", from(clk, chat, alice))
+	if w := r.Meta.Watch; w.Until != began.Add(4*(time.Minute+settle)+3*(5*time.Second+gapTime)+watchSlack).Format(time.RFC3339) {
+		t.Errorf("watch until %s", w.Until)
+	}
+	clk.Advance(time.Minute + settle)
+	c.note()
+	waitFor(t, c.s, "the photo taken", func() bool { return len(c.s.timers) == 0 || c.s.rounds[chat].Waiting })
+	time.Sleep(50 * time.Millisecond) // for the photo to be taken and held for the pause
+	page := c.outbox("0")
+	if len(page.Ops) != 1 || !strings.HasPrefix(page.Ops[0].Text, "**Round 1 of 3** · ") {
+		t.Fatalf("the results alone %+v", page)
+	}
+	if g := c.guess("-37.6, 143.9", from(clk, chat, bob)); reacted(g) {
+		t.Errorf("a guess in the pause: %+v", g)
+	}
+	clk.Advance(gapTime)
+	waitFor(t, c.s, "round 2", func() bool { r := c.s.rounds[chat]; return r != nil && r.Number == 2 && !r.Waiting })
+	page = c.outbox(page.Cursor)
+	if len(page.Ops) != 1 || !strings.HasPrefix(page.Ops[0].Text, "**Round 2 of 3** · 🌍") {
+		t.Fatalf("round 2 %+v", page)
+	}
+	c.s.mu.Lock()
+	if left := c.s.rounds[chat].Deadline.Sub(clk.Now()); left != time.Minute {
+		t.Errorf("round 2 has %s", left)
+	}
+	c.s.mu.Unlock()
 }

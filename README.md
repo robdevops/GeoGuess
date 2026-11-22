@@ -11,8 +11,8 @@ A game is 3 rounds, 3 photos. Round 1 runs its full time, and whoever
 guesses in it is playing; from round 2 on, a round ends as soon as all of
 them have guessed (3s later, for guesses still on their way), so a game
 goes as fast as its players. Someone who joins later still scores, but
-isn't waited for. Each round's results come out when it ends, then the
-next photo.
+isn't waited for. Each round's results come out when it ends, then, 5
+seconds later so they can be read, the next photo, whose time starts then.
 
 Best of 3 wins: the nearest guess wins a round, and whoever wins the most
 rounds wins the game, with points shown alongside. All 3 rounds are

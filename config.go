@@ -29,6 +29,7 @@ type config struct {
 	Nominatim  string        // GEO_NOMINATIM_URL
 	Panoramax  string        // GEO_PANORAMAX_URL
 	Mapillary  string        // GEO_MAPILLARY_URL
+	gap        time.Duration // between a round's results and the next photo: gapTime, not a setting; 0 in most tests
 }
 
 // The shortest and longest round, and the defaults of the settings.
@@ -104,6 +105,7 @@ func loadConfig(getenv func(string) string) (config, error) {
 		c.Keep = append(c.Keep, region)
 	}
 	c.Wait = defaultWait
+	c.gap = gapTime
 	if v := strings.TrimSpace(getenv("GEO_WAIT")); v != "" {
 		if c.Wait, err = time.ParseDuration(v); err != nil || c.Wait < minWait || c.Wait > maxWait {
 			errs = append(errs, fmt.Errorf("GEO_WAIT is %q: use 5s to 110s, such as 50s", v))
