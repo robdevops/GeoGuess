@@ -1284,11 +1284,16 @@ func TestGeoLobby(t *testing.T) {
 			"_meta": map[string]any{vendor + "context": ctx}}, new(toolResult))
 	}
 	r := c.geo("1m", from(clk, chat, alice))
-	if !strings.Contains(words(r), "React to this message with any emoji to join.") || !strings.Contains(words(r), "You're in if you started it") || len(r.Content) != 1 || !r.Meta.Watch.Reactions || !strings.HasSuffix(r.Meta.Watch.Over, "is over. Start another with /geo.") || r.Meta.Watch.Pattern != geo.Pattern {
+	if !strings.Contains(words(r), "React to this message with any emoji to join") || !strings.Contains(words(r), "whoever started it too") || len(r.Content) != 1 || !r.Meta.Watch.Reactions || !strings.HasSuffix(r.Meta.Watch.Over, "is over. Start another with /geo.") || r.Meta.Watch.Pattern != geo.Pattern {
 		t.Fatalf("lobby %+v", r)
 	}
 	if g := c.guess("-37.6, 143.9", from(clk, chat, bob)); words(g) != "The game hasn't started yet." {
 		t.Errorf("a guess in the lobby: %q", words(g))
+	}
+	react(false, from(clk, chat, alice)) // the starter joins too, but alone doesn't start it
+	clk.Advance(lobbyWait)
+	if p := c.outbox("0"); len(p.Ops) != 0 {
+		t.Fatalf("started with one player: %+v", p)
 	}
 	react(false, from(clk, chat, bob))
 	clk.Advance(29 * time.Second)

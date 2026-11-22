@@ -15,8 +15,7 @@ ends, then, 5 seconds later so they can be read, the next photo, whose
 time starts then.
 
 In a group, a game starts with a lobby: react to `/geo`'s answer with any
-emoji to join (take the reaction back to leave). Whoever starts it is in
-already, so one other player is enough. It starts 30 seconds after the last
+emoji to join (take the reaction back to leave). Whoever starts it must react too. It starts 30 seconds after the last
 player joins, once there are at least 2 of you, and is called off if fewer
 than 2 have joined after 5 minutes. On Telegram the bot sees reactions only
 as the group's admin, so without that nobody can join. In a DM there's no

@@ -189,7 +189,7 @@ func (s *server) start(ctx context.Context, c *addon.Context, length time.Durati
 		s.buffer = append([]geo.Photo{photo}, s.buffer...)
 		close(s.changed)
 		s.changed = make(chan struct{})
-		r.Lobby, r.Number, r.Joined, r.CallOff = true, 0, []string{c.Sender}, now.Add(lobbyMax)
+		r.Lobby, r.Number, r.Joined, r.CallOff = true, 0, nil, now.Add(lobbyMax)
 		r.Until = r.Until.Add(lobbyMax)
 		s.armLobby(r)
 		s.mu.Unlock()
@@ -672,12 +672,12 @@ func (s *server) guess(c *addon.Context, msg string) addon.Result {
 // lobbyIntro is /geo's answer in a group: the game, and how to join.
 func lobbyIntro(r *round) string {
 	return fmt.Sprintf("🌍 **GeoGuess** · %d rounds of %s: guess where each photo was taken.\n"+
-		"👋 **React to this message with any emoji to join.** You're in if you started it: the game starts 30 seconds after the next player joins, or after the last one if more join; a round ends as soon as everyone who joined has guessed.",
+		"👋 **React to this message with any emoji to join**, whoever started it too: the game starts 30 seconds after the last player joins, once at least 2 have; a round ends as soon as everyone who joined has guessed.",
 		r.of(), lengthLabel(r.Length))
 }
 
 // reacted is a reaction to the game's messages: in the lobby, a player
-// joining, or leaving if removed (the starter stays); after it, nothing.
+// joining, or leaving if removed; after it, nothing.
 func (s *server) reacted(c *addon.Context, removed bool) addon.Result {
 	if !fromChat(c) {
 		return addon.Text(noChat)
@@ -693,7 +693,7 @@ func (s *server) reacted(c *addon.Context, removed bool) addon.Result {
 	case !removed && !in:
 		r.Joined = append(r.Joined, c.Sender)
 		r.LastJoin = s.clock.Now()
-	case removed && in && c.Sender != r.Starter:
+	case removed && in:
 		r.Joined = slices.DeleteFunc(r.Joined, func(u string) bool { return u == c.Sender })
 	default:
 		s.mu.Unlock()

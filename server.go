@@ -68,7 +68,7 @@ type round struct {
 	Waiting  bool           `json:"waiting,omitempty"`  // between rounds, for the next photo
 	Closed   time.Time      `json:"closed,omitempty"`   // when the last round ended: the next photo waits gapTime after it
 	Lobby    bool           `json:"lobby,omitempty"`    // waiting for players to join by reacting to the intro
-	Joined   []string       `json:"joined,omitempty"`   // who has joined, the starter first
+	Joined   []string       `json:"joined,omitempty"`   // who has joined
 	LastJoin time.Time      `json:"lastJoin,omitempty"` // when the last player joined: the game starts lobbyWait after
 	CallOff  time.Time      `json:"callOff,omitempty"`  // when the lobby gives up with fewer than minPlayers
 }
