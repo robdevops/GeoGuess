@@ -1284,7 +1284,7 @@ func TestGeoLobby(t *testing.T) {
 			"_meta": map[string]any{vendor + "context": ctx}}, new(toolResult))
 	}
 	r := c.geo("1m", from(clk, chat, alice))
-	if !strings.Contains(words(r), "React to this message with any emoji to join.") || len(r.Content) != 1 || !r.Meta.Watch.Reactions || r.Meta.Watch.Pattern != geo.Pattern {
+	if !strings.Contains(words(r), "React to this message with any emoji to join.") || !strings.Contains(words(r), "You're in if you started it") || len(r.Content) != 1 || !r.Meta.Watch.Reactions || r.Meta.Watch.Pattern != geo.Pattern {
 		t.Fatalf("lobby %+v", r)
 	}
 	if g := c.guess("-37.6, 143.9", from(clk, chat, bob)); words(g) != "The game hasn't started yet." {

@@ -672,8 +672,8 @@ func (s *server) guess(c *addon.Context, msg string) addon.Result {
 // lobbyIntro is /geo's answer in a group: the game, and how to join.
 func lobbyIntro(r *round) string {
 	return fmt.Sprintf("🌍 **GeoGuess** · %d rounds of %s: guess where each photo was taken.\n"+
-		"👋 **React to this message with any emoji to join.** The game starts 30 seconds after the last player joins, once there are at least %d of you; a round ends as soon as everyone who joined has guessed.",
-		r.of(), lengthLabel(r.Length), minPlayers)
+		"👋 **React to this message with any emoji to join.** You're in if you started it: the game starts 30 seconds after the next player joins, or after the last one if more join; a round ends as soon as everyone who joined has guessed.",
+		r.of(), lengthLabel(r.Length))
 }
 
 // reacted is a reaction to the game's messages: in the lobby, a player

@@ -17,7 +17,7 @@ seconds later so they can be read, the next photo, whose time starts then.
 In a group, a game starts with a lobby: react to `/geo`'s answer with any
 emoji to join (take the reaction back to leave). It starts 30 seconds after
 the last player joins, once there are at least 2 of you, and is called off
-if fewer than 2 have joined after 5 minutes; whoever starts it has joined.
+if fewer than 2 have joined after 5 minutes; whoever starts it is in already, so one other player is enough.
 Those who joined are the players every round waits for, from round 1;
 anyone may still guess. In a DM it starts at once. On Telegram the bot sees
 reactions only as the group's admin; a bot older than signalbot fe51891
