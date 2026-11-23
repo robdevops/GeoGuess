@@ -23,19 +23,15 @@ type config struct {
 	Regions    string        // GEO_REGIONS: continents or country codes; empty is the world
 	MinQuality float64       // GEO_MIN_QUALITY: the least Mapillary quality_score
 	MaxAge     time.Duration // GEO_MAX_AGE_YEARS, as a duration
-	Buffer     int           // GEO_BUFFER: checked photos kept ready
-	Keep       []string      // GEO_KEEP: regions always kept with a photo ready, one each; "offroad" or "offroad AU" (an off-road photo in AU, kept as "offroad,AU")
+	Buffer     int           // GEO_BUFFER: photos kept ready for GEO_REGIONS
+	Keep       []string      // GEO_KEEP: regions always kept with a full game's photos ready; "offroad" or "offroad AU" (off roads in AU, kept as "offroad,AU")
 	Nominatim  string        // GEO_NOMINATIM_URL
 	Overpass   string        // GEO_OVERPASS_URL
 	Panoramax  string        // GEO_PANORAMAX_URL
 	Mapillary  string        // GEO_MAPILLARY_URL
 	gap        time.Duration // between a round's results and the next photo: gapTime, not a setting; 0 in most tests
-	grace      time.Duration // how long /geo waits for a photo before starting without one, and a later round past the gap before fetching: startGrace, not a setting
+	grace      time.Duration // how long /geo waits for a game's photos the stock lacks before it answers without them: startGrace, not a setting
 }
-
-// between is the longest a later round waits for a photo, after the
-// previous round's results, before it posts that it is fetching one.
-func (c config) between() time.Duration { return c.gap + c.grace }
 
 // The shortest and longest round, and the defaults of the settings.
 const (
@@ -92,7 +88,7 @@ func loadConfig(getenv func(string) string) (config, error) {
 		}
 	}
 	c.MaxAge = time.Duration(years * float64(year))
-	c.Buffer = 3
+	c.Buffer = gameRounds + 1 // a full game, with a spare for a tie-breaker
 	if v := strings.TrimSpace(getenv("GEO_BUFFER")); v != "" {
 		if c.Buffer, err = strconv.Atoi(v); err != nil || c.Buffer < 1 || c.Buffer > 20 {
 			errs = append(errs, fmt.Errorf("GEO_BUFFER is %q: use a whole number from 1 to 20", v))

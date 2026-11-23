@@ -5,7 +5,10 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"log"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -16,8 +19,9 @@ import (
 	"github.com/robdevops/signalbot/addon"
 )
 
-// server is GeoGuess: the chats' rounds, their scores and the photos kept
-// ready. srv speaks to the bot, and holds the outbox it reads.
+// server is GeoGuess: the chats' games, their scores and the photos kept
+// for games, in the stock or reserved. srv speaks to the bot, and holds
+// the outbox it reads.
 type server struct {
 	cfg    config
 	clock  clock
@@ -26,24 +30,28 @@ type server struct {
 	doc    *state.Doc
 	srv    *addon.Server
 	wake   chan struct{} // the prefetcher has work
+
+	mu sync.Mutex
 	// perGame is the rounds in a game: gameRounds, or 1 in the tests of a
 	// single round.
 	perGame int
+	rounds  map[string]*round  // by chat
+	timers  map[string]stopper // each game's, by chat
+	used    []string           // the last maxUsed photos' keys, oldest first
+	scores  map[string][]score // by chat, the last scoreDays days
+	stock   []kept             // photos ready for a game, oldest first
+	recent  []recentKey        // region keys games used lately, newest first: kept stocked
+	retries map[string]retry   // region keys whose last search failed
+	turn    int                // the stock key the next refill starts from
+	changed chan struct{}      // closed when the stock or a game gains a photo
+	// The search under way: its key, how to stop it, and whether it was
+	// stopped for a game gathering photos.
+	searching  string
+	stopSearch context.CancelFunc
+	stopped    bool
+	seeds      map[string]*geo.Seeds
 
-	mu      sync.Mutex
-	rounds  map[string]*round             // by chat
-	timers  map[string]stopper            // each round's, by chat
-	used    []string                      // the last maxUsed photos' keys, oldest first
-	scores  map[string][]score            // by chat, the last scoreDays days
-	buffer  []geo.Photo                   // photos ready for a round, oldest first
-	wants   map[string]bool               // regions a /geo asked for that the buffer lacks
-	retries map[string]retry              // GEO_KEEP regions whose last search failed
-	changed chan struct{}                 // closed when the buffer gains a photo
-	fetches map[string]context.CancelFunc // by game, stops the fetch of a round's photo
-	seeds   map[string]*geo.Seeds
-
-	saveMu sync.Mutex     // one save at a time, so the last one written is the newest
-	next   sync.WaitGroup // nextRound's goroutines, which tests wait for
+	saveMu sync.Mutex // one save at a time, so the last one written is the newest
 }
 
 // round is one chat's game, at its open round. Its guesses are distances
@@ -68,14 +76,16 @@ type round struct {
 	Totals   map[string]int `json:"totals,omitempty"`   // the game's points so far, by player
 	Wins     map[string]int `json:"wins,omitempty"`     // rounds won so far, by player
 	Tie      []string       `json:"tie,omitempty"`      // in a tie-breaker round, the players tied for the win
-	Waiting  bool           `json:"waiting,omitempty"`  // between rounds, for the next photo; before round 1 (Number 0), for its photo
-	Fetch    time.Time      `json:"fetch,omitempty"`    // when the fetch of the next round's photo began, if one is on: it gives up once Fetched reaches fetchMax
-	Fetched  time.Duration  `json:"fetched,omitempty"`  // how long the game's fetches that found a photo took, from its allowance of fetchMax
+	Waiting  bool           `json:"waiting,omitempty"`  // between rounds, for the gap; before round 1 (Number 0), for its photos
+	Photos   []kept         `json:"photos,omitempty"`   // reserved for the rounds to come, the spare last
+	GiveUp   time.Time      `json:"giveUp,omitempty"`   // when the game stops gathering photos: fetchMax after /geo
 	Closed   time.Time      `json:"closed,omitempty"`   // when the last round ended: the next photo waits gapTime after it
 	Lobby    bool           `json:"lobby,omitempty"`    // waiting for players to join by reacting to the intro
 	Joined   []string       `json:"joined,omitempty"`   // who has joined
 	LastJoin time.Time      `json:"lastJoin,omitempty"` // when the last player joined: the game starts lobbyWait after
 	CallOff  time.Time      `json:"callOff,omitempty"`  // when the lobby gives up with fewer than minPlayers
+
+	starting bool // /geo is still deciding its answer: not saved, as the bot has no watch for it yet
 }
 
 // of is the rounds in r's game.
@@ -109,6 +119,8 @@ type saved struct {
 	Used   []string           `json:"used"`
 	Scores map[string][]score `json:"scores"`
 	Outbox []addon.Held       `json:"outbox"`
+	Stock  []kept             `json:"stock,omitempty"`
+	Recent []recentKey        `json:"recent,omitempty"`
 }
 
 // The state's limits: photos remembered as used, days of scores, and the
@@ -123,9 +135,9 @@ const (
 	// late guess still stays out of the chat's history.
 	watchSlack = 5 * time.Second
 	// gameRounds is the rounds in a game, and maxGame the longest a game
-	// may run, with the gap and grace before each later round's photo: with
-	// lobbyMax and fetchMax, the one allowance for all of a game's fetches,
-	// within the bot's default watch_max of 1h.
+	// may run, with the gap before each round's photo: with lobbyMax and
+	// fetchMax, the time to gather its photos, within the bot's default
+	// watch_max of 1h.
 	gameRounds = 3
 	// gapTime is the pause between a round's results and the next photo,
 	// so players can read the results.
@@ -139,8 +151,9 @@ const (
 	lobbyMax   = 5 * time.Minute
 )
 
-// newServer loads the state saved in cfg.StateDir, re-arms its rounds'
-// timers and reveals at once those whose time passed while it was down.
+// newServer loads the state saved in cfg.StateDir with its kept photos,
+// re-arms its games' timers and reveals at once rounds whose time passed
+// while it was down.
 func newServer(cfg config, clk clock, photos finder, logger *log.Logger) (*server, error) {
 	s := &server{
 		cfg: cfg, clock: clk, photos: photos, log: logger,
@@ -150,13 +163,14 @@ func newServer(cfg config, clk clock, photos finder, logger *log.Logger) (*serve
 		rounds:  map[string]*round{},
 		timers:  map[string]stopper{},
 		scores:  map[string][]score{},
-		wants:   map[string]bool{},
 		retries: map[string]retry{},
 		changed: make(chan struct{}),
-		fetches: map[string]context.CancelFunc{},
 		seeds:   map[string]*geo.Seeds{},
 	}
 	s.srv = addon.New(addon.Config{Name: "geoguess", Title: "GeoGuess", Version: "1", Tools: s.tools(), Now: clk.Now, Changed: s.save})
+	if err := os.MkdirAll(filepath.Join(cfg.StateDir, photoDir), 0o700); err != nil {
+		return nil, fmt.Errorf("GEO_STATE_DIR can't hold its photos: %v", bare(err))
+	}
 	var st saved
 	if _, err := s.doc.Load(&st); err != nil {
 		return nil, err
@@ -167,6 +181,10 @@ func newServer(cfg config, clk clock, photos finder, logger *log.Logger) (*serve
 	}
 	s.srv.Restore(st.Outbox)
 	s.mu.Lock()
+	now := s.clock.Now()
+	s.stock = s.loadPhotos(st.Stock, now, maxStockAge)
+	slices.SortStableFunc(s.stock, func(a, b kept) int { return a.Found.Compare(b.Found) })
+	s.recent = slices.DeleteFunc(st.Recent, func(k recentKey) bool { return now.Sub(k.At) >= recentAge })
 	revealed := 0
 	for _, r := range st.Rounds {
 		if r == nil || s.rounds[r.Chat] != nil {
@@ -175,27 +193,31 @@ func newServer(cfg config, clk clock, photos finder, logger *log.Logger) (*serve
 		if r.Guesses == nil {
 			r.Guesses = map[string]guess{}
 		}
+		r.Photos = s.loadPhotos(r.Photos, now, 0)
+		if r.GiveUp.IsZero() && r.Number+len(r.Photos) < need(r.of()) { // saved before games reserved photos
+			r.GiveUp = now.Add(fetchMax)
+		}
 		s.rounds[r.Chat] = r
 		switch {
 		case r.Lobby:
 			s.armLobby(r)
-			if r.Region != "" && s.match(r.Region) < 0 { // fetch round 1's photo during the lobby again
-				s.wants[r.Region] = true
-			}
-		case r.Waiting: // for its next photo, or round 1's
-			s.goNext(r.Chat, r.ID, r.Number+1)
-		case !s.clock.Now().Before(r.Deadline.Add(settle)):
+		case r.Waiting && r.Number == 0: // gathering round 1's photos
+			s.readyLocked(r, false)
+		case r.Waiting: // in the gap before its next round
+			s.nextLocked(r)
+		case !now.Before(r.Deadline.Add(settle)):
 			s.timeUpLocked(r)
 			revealed++
 		default:
 			s.arm(r)
 		}
 	}
+	s.trimLocked()
+	s.cleanPhotos()
+	held := s.held()
 	s.mu.Unlock()
-	s.log.Printf("started: %d rounds open, %d revealed late, %d ops held", len(s.rounds), revealed, len(s.srv.Outbox()))
-	if revealed > 0 {
-		s.save()
-	}
+	s.log.Printf("started: %d games open, %d rounds revealed late, %d photos kept, %d ops held", len(s.rounds), revealed, held, len(s.srv.Outbox()))
+	s.save()
 	return s, nil
 }
 
@@ -205,9 +227,13 @@ func (s *server) save() {
 	s.saveMu.Lock()
 	defer s.saveMu.Unlock()
 	s.mu.Lock()
-	st := saved{Used: s.used, Scores: s.scores, Outbox: s.srv.Outbox(), Rounds: make([]*round, 0, len(s.rounds))}
+	st := saved{Used: s.used, Scores: s.scores, Outbox: s.srv.Outbox(), Rounds: make([]*round, 0, len(s.rounds)), Stock: slices.Clone(s.stock), Recent: s.recent}
 	for _, r := range s.rounds {
-		st.Rounds = append(st.Rounds, r)
+		if r.starting { // no watch for it yet: its photos are saved as stock
+			st.Stock = append(st.Stock, r.Photos...)
+		} else {
+			st.Rounds = append(st.Rounds, r)
+		}
 	}
 	slices.SortFunc(st.Rounds, func(a, b *round) int { return strings.Compare(a.Chat, b.Chat) })
 	data, err := json.Marshal(st)

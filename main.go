@@ -62,7 +62,7 @@ func run() int {
 		logger.Printf("GEO_MAPILLARY_TOKEN is not set: Panoramax only, in France unless GEO_REGIONS says otherwise")
 	}
 	if os.Getenv("GEO_WAIT") != "" {
-		logger.Printf("GEO_WAIT is no longer used: a later round's photo is fetched as round 1's is")
+		logger.Printf("GEO_WAIT is no longer used: a game reserves its photos before round 1, so no round waits for one")
 	}
 	client := httpx.Client(4)
 	var sources []geo.Source

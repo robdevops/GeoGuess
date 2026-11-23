@@ -26,35 +26,6 @@ are at least 2 of you, and is called off if fewer than 2 have joined after
 so without that nobody can join. In a DM there's no lobby: the game
 starts at once, and a round ends as soon as you guess.
 
-If no photo is ready (often so for `/geo offroad`, a slow region, or just
-after GeoGuess starts), `/geo` waits about 3 seconds for one, then starts
-the game anyway. In a DM, or a group without a lobby, it answers "🔎
-Fetching a spot… round 1 follows as soon as it's found." ("an off-road
-spot" for `/geo offroad`), and posts round 1's photo once it is found.
-In a lobby the photo is looked for while players join; if it still isn't
-there when the lobby ends, the same "Fetching" message is posted and round
-1 follows. Meanwhile `/geo` says round 1's photo is on its way, a guess is
-told the game hasn't started, and the starter's `/geo end` calls it off.
-With no photo 5 minutes after the fetch began (when `/geo` answered, or
-when the lobby ended), the bot posts "I couldn't find a spot, so the game
-is off." ("an off-road spot" for `/geo offroad`) and the game ends. A restart carries on waiting, to the same
-limit.
-
-A later round's photo usually comes from the buffer, and for a region or
-`/geo offroad` it is looked for while the round before is played. If it
-isn't there about 3 seconds after the 5-second pause that follows the
-results, the bot posts "🔎 Fetching round 2's spot…" ("🔎 Fetching an
-off-road spot for round 2…" for `/geo offroad`) and keeps waiting.
-Meanwhile `/geo` and `/geo skip` say the photo is on its way, and the
-starter's `/geo end` ends the game with the totals so far. A game has 5
-minutes of fetching in all, round 1's and later rounds' together: once a
-fetch has used up what earlier ones left, the bot posts "I couldn't find
-a spot for round 2, so the game ends here." with the totals so far (at
-once, without "Fetching", if under 3 seconds are left). A tie-breaker is
-called "the tie-breaker" in these posts. A restart carries on waiting, to
-the same limit. (`GEO_WAIT`, which once set how long a later round
-waited, is no longer used; the log says so if it is set.)
-
 For an hour after a game ends, however it ended, a reply to one of its
 messages (in a DM, one of its photos) that asks the bot gets "That game is
 over. Start another with /geo." instead of the model's answer. The bot
@@ -62,7 +33,8 @@ keeps this in memory only, so a restart forgets it.
 
 Best of 3 wins: the nearest guess wins a round, and whoever wins the most
 rounds wins the game, with points shown alongside. All 3 rounds are
-played. If the top players are tied on wins, a tie-breaker round follows:
+played. If the top players are tied on wins, a tie-breaker round follows,
+with the game's spare photo:
 anyone may guess, but only the tied players can win it, and it ends once
 they have all guessed. If none of them wins it, points decide.
 
@@ -97,15 +69,12 @@ Only the spots that pass are downloaded. The check is as good as
 OpenStreetMap's map there: an unmapped road or trail can fool it.
 Overpass is asked at most once every 2 seconds, one query for each area
 searched, so off-road photos are slower to find. Overpass being busy,
-rate-limiting or blocking the query stops that search; a kept
-`GEO_KEEP=offroad` region is then tried again after a minute while other
-searches go on, and an off-road search a game asked for waits a minute
-before any other. `GEO_KEEP=offroad` keeps one ready. One search runs at a time, so a slow
-off-road search can hold up a `/geo` for another region for up to its 3
-minutes. While a round of a game with a region is played, the next
-round's photo is already being looked for.
-A plain `/geo` may use an off-road photo too, but leaves the one
-`GEO_KEEP` keeps when another will do.
+rate-limiting or blocking the query stops that search, and off-road
+searches there wait a minute while other searches go on. One search runs
+at a time; a search only refilling the stock is stopped when a game
+starts gathering photos of another kind, but one for another game isn't,
+and may take up to 3 minutes. A plain `/geo` uses an off-road photo only
+when the stock has more than it keeps for off-road games.
 
 `/geo end` (or `stop`) reveals the round and the totals; in the lobby it
 calls the game off. `/geo skip` goes on to the next round without
@@ -113,6 +82,53 @@ scoring this one. Only the player who started the game may do either.
 
 The keys of the last 1,000 photos used are kept, so none comes round
 again soon.
+
+### A game's photos
+
+A game never searches for a photo once it has begun. `/geo` reserves a
+photo for each of its rounds, and a spare for a tie-breaker (4 in all for
+3 rounds), from the stock of photos kept ready (below). With a photo for
+each round in hand, or within about 3 seconds, the game starts as above.
+Otherwise, in a DM or a group without a lobby, `/geo` answers "🔎 Fetching
+spots for 3 rounds…" ("off-road spots" for `/geo offroad`); in a lobby,
+`/geo` answers with the intro at once, the photos are gathered while
+players join, and if some are still missing
+when the countdown ends the bot posts "🔎 Still fetching: 2 of 3 spots
+ready…". The search for a game's photos comes before any other, and round
+1 follows as soon as each round has its photo; the spare may still be
+found during play. Meanwhile `/geo` says round 1's photo is on its way, a
+guess is told the game hasn't started, and the starter's `/geo end` calls
+it off.
+
+A game gathers photos for at most 5 minutes from `/geo`. By then, with
+some, it plays that many rounds, saying so first ("Only found 2 spots, so
+this game is 2 rounds."); with none, the bot posts "I couldn't find a
+spot, so the game is off." ("an off-road spot" for `/geo offroad`). If
+the top players are tied after the last round and the game has no spare,
+points decide. However a game ends, the photos it reserved but didn't
+show go back to the stock, where a game still gathering photos may take
+them. A restart carries on gathering, to the same limit. A game being
+started (its first few seconds) can't be ended yet: `/geo end` says to
+try again in a moment.
+
+### The stock
+
+GeoGuess keeps photos ready, found ahead by one search at a time:
+`GEO_BUFFER` (default 4, a full game with its spare) for `GEO_REGIONS`,
+and a full game's 4 for each `GEO_KEEP` region and for each of the 6 kinds
+of game (a region, `offroad`, or both, as in `offroad,AU`) most recently
+played in the last 7 days, so after one `/geo offroad` the next usually
+starts at once. The kinds are taken in turn, so a slow one (off-road
+photos are) can't hold up the rest, and one whose search fails waits its
+own backoff (5 seconds, doubling to 5 minutes, or a minute if Overpass is
+busy) while the others go on. The stock is kept on disk, so it survives a
+restart; at most 32 photos are kept in all, the stock and the photos games
+have reserved together. If what the stock is kept filled with comes to
+more than that (a large `GEO_BUFFER`, or many `GEO_KEEP` regions), some
+kinds stay short; photos of a kind no longer kept are dropped first, then
+the oldest. A game takes the photos found for its own kind first, then
+those another kind can spare, then any other in its region (but an
+off-road one only if spare).
 
 ### Reaching the bot
 
@@ -162,12 +178,10 @@ read guesses and the lobby's reactions).
 ### Timeouts
 
 A game's watch lasts at most 55 minutes and 5 seconds (a lobby's 5
-minutes, 5 for all of the game's fetches together, round 1's and later
-rounds', then at most 45 for the game), so the default `watch_max` of 1h
-is enough. A watch is set once, by `/geo`'s answer, and can't be
-extended, which is why a game's fetches share one 5-minute allowance
-rather than having 5 minutes each. `/geo` waits at most about 3 seconds
-for a photo before it answers, so any `timeout` above 5 seconds will do.
+minutes, 5 to gather its photos, then at most 45 for the game), so the
+default `watch_max` of 1h is enough. A watch is set once, by `/geo`'s
+answer, and can't be extended. `/geo` waits at most about 3 seconds for
+photos before it answers, so any `timeout` above 5 seconds will do.
 GeoGuess never waits past the bot's timeout anyway, less a few seconds to
 send the answer, and starts no game the bot has given up on.
 
@@ -193,15 +207,15 @@ through the bot's proxy, and trusts its CA), and nothing else.
 
 | Variable | Default | Description |
 |---|---|---|
-| `GEO_STATE_DIR` | signalbot's `addons/geo` | Where GeoGuess keeps `geo.json` and its log. Created, mode 700, if missing; GeoGuess exits at start if it can't create, list and write it |
+| `GEO_STATE_DIR` | signalbot's `addons/geo` | Where GeoGuess keeps `geo.json`, its log and its photos (`photos/`). Created, mode 700, if missing; GeoGuess exits at start if it can't create, list and write it |
 | `GEO_MAPILLARY_TOKEN` | empty | Mapillary client token (`MLY\|…`), sent as `Authorization: OAuth <token>`. Empty means Panoramax only, and then rounds are in France unless `GEO_REGIONS` says otherwise |
 | `GEO_MEMLIMIT` | `200MiB` | Memory limit, applied with `debug.SetMemoryLimit`, written as `GOMEMLIMIT` is (`B`, `KiB`, `MiB`, `GiB`, `TiB`), at least `16MiB` |
 | `GEO_ROUND` | `3m` | Default round length, 30s to 30m |
 | `GEO_REGIONS` | empty (world) | Continents (`europe`, `asia`, `africa`, `north-america`, `south-america`, `oceania`) or ISO country codes, comma-separated. Not `offroad`, which is a kind of game: use `GEO_KEEP=offroad` |
 | `GEO_MIN_QUALITY` | `0.5` | Minimum Mapillary `quality_score` (0 to 1), when a photo has one |
 | `GEO_MAX_AGE_YEARS` | `10` | Ignore older photos; more than 0, up to 100 |
-| `GEO_BUFFER` | `3` | Checked photos kept ready (1 to 20) |
-| `GEO_KEEP` | empty | Regions to always keep a photo ready for, comma-separated, in `GEO_REGIONS`'s names, one photo each: `AU,NZ` keeps one Australian and one New Zealand photo, so `/geo AU` answers at once. `offroad` keeps one off-road photo ready for `/geo offroad`, and `offroad AU` one off roads in Australia, for `/geo offroad AU` (commas separate kept regions, so `offroad,AU` keeps two photos: one off roads anywhere and one in Australia). Searched before topping up `GEO_BUFFER` (a region whose search fails is tried again after a backoff, and the buffer fills meanwhile), never dropped to make room or used by a `/geo` another photo can serve, and refilled once used |
+| `GEO_BUFFER` | `4` | Checked photos kept ready for `GEO_REGIONS` (1 to 20); 4 is a full game with its spare |
+| `GEO_KEEP` | empty | Regions to always keep a full game's photos ready for, comma-separated, in `GEO_REGIONS`'s names: `AU,NZ` keeps a game's worth for `/geo AU` and for `/geo NZ`. `offroad` keeps them for `/geo offroad`, and `offroad AU` for `/geo offroad AU` (commas separate kept regions, so `offroad,AU` keeps two: off roads anywhere, and in Australia). Kept as the regions games used lately are (see [the stock](#the-stock)), but for good |
 | `GEO_NOMINATIM_URL` | `https://nominatim.openstreetmap.org` | Reverse geocoder for the place names; `https://` only, as it is sent each round's answer |
 | `GEO_OVERPASS_URL` | `https://overpass-api.de/api/interpreter` | Overpass API interpreter for the off-road check, such as another instance's; `https://` only, as it is sent candidate photos' spots |
 | `GEO_PANORAMAX_URL` | `https://api.panoramax.xyz` | Panoramax API (a STAC catalogue), such as one instance's; `https://` only |
@@ -246,9 +260,16 @@ which keeps only its distance anyway.
 - 7 days of points per chat, by player pseudonym;
 - outbox ops the bot hasn't read yet, for at most an hour.
 
-The photos kept ready are held in memory only, each marked if it passed
-the off-road check; an open game's region keeps `offroad` for an
-off-road game, so its later rounds are off roads too.
+- the photos kept ready and those open games reserved: each one's
+  source, ID, author, licence, link, where it was taken and the place's
+  name, when it was found and the kind of game it was found for, and
+  whether it passed the off-road check; its JPEG is in
+  `$GEO_STATE_DIR/photos/`, one file each (mode 600), deleted once the
+  photo is shown or leaves the stock. At most 32 are kept; at start,
+  stocked photos over 7 days old are dropped, as are any whose file is
+  missing;
+- the kinds of game (regions, `offroad`) played in the last 7 days, the 6
+  most recent, which are kept stocked.
 
 `$GEO_STATE_DIR/geoguess.log` (moved to `geoguess.log.1` past 4 MiB at
 start) records lobbies and their player counts, rounds started, ended
@@ -271,20 +292,19 @@ their cancellation, and the outbox the bot reads. GeoGuess adds:
 - Starting a game answers with one watch for `geo_guess` for the whole
   game, until 5s past its latest end, with `guard` "No hints during a
   round 😉" and `over` "That game is over. Start another with /geo.". In a
-  DM the answer is round 1's photo and its caption, or, with no photo
-  ready, the "Fetching" text, and round 1's photo follows as a `post`
+  DM the answer is round 1's photo and its caption, or, with photos
+  missing, the "Fetching" text, and round 1's photo follows as a `post`
   with the image. In a group, if the bot says it takes `watchReactions`,
   it is the lobby's intro and the watch has `reactions`; round 1's photo
-  follows as a `post` when the lobby starts the game (after a "Fetching"
-  `post` if it isn't ready). A recorded guess answers with the reaction
-  📍. `/geo` gives up in time for the bot's `deadline`.
+  follows as a `post` when the lobby starts the game (after a "Still
+  fetching" `post` if photos are missing). A recorded guess answers with
+  the reaction 📍. `/geo` gives up in time for the bot's `deadline`.
 - When a round ends GeoGuess queues a `post` with the results, its players
-  as `{u_…}` placeholders, then the next round's photo as a `post` with
-  the image (from the buffer, after a "Fetching" `post` if it isn't
-  ready); after the last
-  round, the totals and an `unwatch`. `/geo end` (or `stop`) and
+  as `{u_…}` placeholders, then the next round's photo, one the game
+  reserved, as a `post` with the image; after the last round, the totals
+  and an `unwatch`. `/geo end` (or `stop`) and
   `/geo skip` answer with the results themselves. Ops the bot hasn't read
   are saved in `geo.json`, with their IDs, so they survive a restart.
-- On start, games still open get their timers back (a lobby's too, and a
-  fetch's limit), and rounds whose time passed while GeoGuess was down
-  are revealed at once.
+- On start, games still open get their timers back (a lobby's too, and
+  the limit on gathering photos), and rounds whose time passed while
+  GeoGuess was down are revealed at once.

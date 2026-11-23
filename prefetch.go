@@ -1,10 +1,10 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"log"
-	"maps"
 	"math/rand/v2"
 	"slices"
 	"strings"
@@ -19,28 +19,27 @@ type finder interface {
 	Find(ctx context.Context, regions string) (geo.Photo, error)
 }
 
-// The prefetcher's limits: one search's time, and the photos kept beyond
-// GEO_BUFFER for rounds in other regions.
-const (
-	findTimeout = 3 * time.Minute
-	extraPhotos = 4
-)
+// findTimeout is the longest one search may take.
+const findTimeout = 3 * time.Minute
 
-// retry is when a GEO_KEEP region whose search failed is searched again,
-// and how many times in a row it has failed.
+// retry is when a region key whose search failed is searched again, how
+// many times in a row it has failed, and whether a source asked to slow
+// down.
 type retry struct {
 	at       time.Time
 	failures int
+	slow     bool
 }
 
-// prefetch keeps GEO_BUFFER checked photos ready, so /geo answers at once,
-// and looks for one in each region a /geo asked for. It is the only caller
-// of Find. A GEO_KEEP region whose search fails waits its own backoff,
-// while the rest go on, so one hard region can't starve the buffer.
+// prefetch finds the photos games need, so no round ever waits for a
+// search: first for games still gathering theirs, then to keep the stock
+// filled for each key it is kept for, taking the keys in turn so one slow
+// key can't starve the rest. It is the only caller of Find. A key whose
+// search fails waits its own backoff while the others go on; a source
+// other than Overpass asking to slow down holds up every search.
 func (s *server) prefetch(ctx context.Context) {
-	failures := 0
 	for {
-		region, ok, next := s.nextSearch(time.Now())
+		key, ok, next := s.nextSearch(time.Now())
 		if !ok {
 			if !s.idle(ctx, next) {
 				return
@@ -48,39 +47,34 @@ func (s *server) prefetch(ctx context.Context) {
 			continue
 		}
 		fctx, cancel := context.WithTimeout(ctx, findTimeout)
-		p, err := s.photos.Find(fctx, region)
+		s.mu.Lock()
+		s.searching, s.stopSearch, s.stopped = key, cancel, false
+		s.mu.Unlock()
+		p, err := s.photos.Find(fctx, key)
 		cancel()
+		s.mu.Lock()
+		stopped := s.stopped
+		s.searching, s.stopSearch, s.stopped = "", nil, false
+		s.mu.Unlock()
 		if ctx.Err() != nil {
 			return
 		}
 		if err == nil {
-			failures = 0
-			s.add(p, region)
+			s.add(p, key)
+			continue
+		}
+		if stopped { // for a game gathering photos: no failure
 			continue
 		}
 		s.mu.Lock()
-		keep := slices.Contains(s.cfg.Keep, region)
-		// A GEO_KEEP region is searched again after its backoff; another is
-		// asked again by the next /geo, or kept while a game waits for it.
-		if keep || !s.awaited(region) {
-			delete(s.wants, region)
-		}
-		var wait time.Duration
-		if keep {
-			r := s.retries[region]
-			wait = backoff(r.failures, err)
-			s.retries[region] = retry{time.Now().Add(wait), min(r.failures+1, 10)}
-		}
+		r := s.retries[key]
+		wait := backoff(r.failures, err)
+		s.retries[key] = retry{time.Now().Add(wait), min(r.failures+1, 10), errors.Is(err, geo.ErrSlowDown)}
 		s.mu.Unlock()
-		// Overpass being busy slows down only a kept region's off-road
-		// searches; other sources being busy slows down every search.
-		if keep && (!errors.Is(err, geo.ErrSlowDown) || errors.Is(err, geo.ErrOverpassBusy)) {
-			s.log.Printf("no photo found for a kept region (%v); trying it again in %s", err, wait)
+		s.log.Printf("no photo found (%v); trying that region again in %s", err, wait)
+		if !errors.Is(err, geo.ErrSlowDown) || errors.Is(err, geo.ErrOverpassBusy) {
 			continue
 		}
-		wait = backoff(failures, err)
-		failures = min(failures+1, 10)
-		s.log.Printf("no photo found (%v); trying again in %s", err, wait)
 		t := time.NewTimer(wait)
 		select {
 		case <-t.C:
@@ -101,8 +95,8 @@ func backoff(failures int, err error) time.Duration {
 	return min(5*time.Second<<failures, 5*time.Minute)
 }
 
-// idle waits for work: a wake, or next, when a GEO_KEEP region may be
-// searched again (zero for none). It is false once ctx is done.
+// idle waits for work: a wake, or next, when a key may be searched again
+// (zero for none). It is false once ctx is done.
 func (s *server) idle(ctx context.Context, next time.Time) bool {
 	var due <-chan time.Time
 	if !next.IsZero() {
@@ -119,140 +113,124 @@ func (s *server) idle(ctx context.Context, next time.Time) bool {
 	return true
 }
 
-// awaited reports whether a game yet to open round 1, or between rounds,
-// waits for a photo in region, so a failed search there is tried again.
-// s.mu is held.
-func (s *server) awaited(region string) bool {
-	for _, r := range s.rounds {
-		if (r.Number == 0 || r.Waiting) && r.Region == region {
-			return true
-		}
-	}
-	return false
+// gathering reports whether r's game still gathers photos at now: it
+// lacks some of its need, and fetchMax since /geo hasn't passed.
+func gathering(r *round, now time.Time) bool {
+	return !r.GiveUp.IsZero() && now.Before(r.GiveUp) && r.Number+len(r.Photos) < need(r.of())
 }
 
-// nextSearch is the region to look in next: the first a /geo asked for
-// that the buffer lacks, else the first GEO_KEEP region it lacks whose
-// retry is due at now, else GEO_REGIONS while the buffer isn't full. With
-// none, next is the earliest retry still to come, or zero.
-func (s *server) nextSearch(now time.Time) (region string, ok bool, next time.Time) {
+// gatherers is the games gathering photos, the longest-waiting first.
+// s.mu is held.
+func (s *server) gatherers() []*round {
+	now := s.clock.Now()
+	var out []*round
+	for _, r := range s.rounds {
+		if gathering(r, now) {
+			out = append(out, r)
+		}
+	}
+	slices.SortFunc(out, func(a, b *round) int { return cmp.Or(a.GiveUp.Compare(b.GiveUp), strings.Compare(a.Chat, b.Chat)) })
+	return out
+}
+
+// hurry lets a game's region key be searched at once, though an earlier
+// search there failed, unless a source asked to slow down. s.mu is held.
+func (s *server) hurry(key string) {
+	if r, ok := s.retries[key]; ok && !r.slow {
+		r.at = time.Time{}
+		s.retries[key] = r
+	}
+}
+
+// interruptLocked stops the search under way if it only refills the
+// stock and isn't for key, a game's that just began gathering photos, so
+// that game's search comes first. s.mu is held.
+func (s *server) interruptLocked(key string) {
+	if s.stopSearch == nil || strings.EqualFold(s.searching, key) ||
+		slices.ContainsFunc(s.gatherers(), func(r *round) bool { return strings.EqualFold(r.Region, s.searching) }) {
+		return
+	}
+	s.stopped = true
+	s.stopSearch()
+}
+
+// nextSearch is the region key to search next: a gathering game's, else,
+// while fewer than maxHeld photos are kept, the next key in turn the stock
+// lacks photos for, each only once its retry is due at now. With none,
+// next is the earliest retry still to come, or zero.
+func (s *server) nextSearch(now time.Time) (key string, ok bool, next time.Time) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	for _, region := range slices.Sorted(maps.Keys(s.wants)) {
-		if s.match(region) >= 0 {
-			delete(s.wants, region)
-			continue
-		}
-		return region, true, time.Time{}
-	}
-	for _, region := range s.cfg.Keep {
-		if s.match(region) >= 0 {
-			delete(s.retries, region)
-			continue
-		}
-		r, failed := s.retries[region]
+	due := func(key string) bool {
+		r, failed := s.retries[key]
 		if !failed || !now.Before(r.at) {
-			return region, true, time.Time{}
+			return true
 		}
 		if next.IsZero() || r.at.Before(next) {
 			next = r.at
 		}
+		return false
 	}
-	return "", len(s.buffer) < s.cfg.Buffer, next
-}
-
-// add puts a photo found for region in the buffer, and marks it used so no
-// later search finds it again. Past GEO_BUFFER and extraPhotos it drops the
-// oldest, but never a GEO_KEEP region's last.
-func (s *server) add(p geo.Photo, region string) {
-	s.mu.Lock()
-	s.buffer = append(s.buffer, p)
-	for over := len(s.buffer) - s.cfg.Buffer - extraPhotos; over > 0; over-- {
-		i := slices.IndexFunc(s.buffer, s.droppable)
-		if i < 0 {
-			break
-		}
-		s.buffer = slices.Delete(s.buffer, i, i+1)
-	}
-	s.markUsed(p.Key())
-	delete(s.wants, region)
-	delete(s.retries, region)
-	close(s.changed)
-	s.changed = make(chan struct{})
-	n := len(s.buffer)
-	s.mu.Unlock()
-	s.save()
-	s.log.Printf("a %s photo is ready; %d in all", p.Source, n)
-}
-
-// droppable reports whether p, in the buffer, can leave it without leaving
-// a GEO_KEEP region with no photo. s.mu is held.
-func (s *server) droppable(p geo.Photo) bool {
-	for _, region := range s.cfg.Keep {
-		if !s.in(p, region) {
-			continue
-		}
-		n := 0
-		for _, q := range s.buffer {
-			if s.in(q, region) {
-				n++
+	// Full: a found photo would only push out one that is wanted.
+	full := s.held() >= maxHeld && !slices.ContainsFunc(s.stock, func(k kept) bool { return s.surplus(k.For) })
+	if !full || len(s.stock) > 0 { // a game's photo then pushes out a stocked one
+		for _, r := range s.gatherers() {
+			if due(r.Region) {
+				return r.Region, true, time.Time{}
 			}
 		}
-		if n < 2 {
-			return false
-		}
 	}
-	return true
+	if full {
+		return "", false, next
+	}
+	keys := s.stockKeys(s.clock.Now())
+	for i := range keys {
+		k := keys[(s.turn+i)%len(keys)]
+		if s.stocked(k.key) >= k.want || !due(k.key) {
+			continue
+		}
+		s.turn = (s.turn + i + 1) % len(keys)
+		return k.key, true, time.Time{}
+	}
+	return "", false, next
 }
 
-// take is a photo from the buffer for region, waiting up to wait for the
-// prefetcher to find one. Taking one wakes the prefetcher, which refills a
-// GEO_KEEP region it used up.
-func (s *server) take(ctx context.Context, region string, wait time.Duration) (geo.Photo, bool) {
-	t := time.NewTimer(max(wait, 0))
-	defer t.Stop()
-	for {
-		s.mu.Lock()
-		if i := s.pick(region); i >= 0 {
-			p := s.buffer[i]
-			s.buffer = slices.Delete(s.buffer, i, i+1)
-			s.mu.Unlock()
-			s.wakeUp()
-			return p, true
+// add keeps a photo found for key, and marks it used so no later search
+// finds it again: it goes to a game gathering photos in its region, the
+// one it was found for first, which starts once it has a photo for each
+// round (an off-road photo to a game not asking for one only if the stock
+// has enough of them); else to the stock. Its JPEG is saved first.
+func (s *server) add(p geo.Photo, key string) {
+	k := kept{Candidate: p.Candidate, Place: p.Place, Offroad: p.Offroad, For: key, Found: s.clock.Now(), JPEG: p.JPEG}
+	s.writePhoto(k)
+	s.mu.Lock()
+	s.markUsed(p.Key())
+	delete(s.retries, key)
+	var to *round
+	for _, r := range s.gatherers() {
+		if !s.in(k, r.Region) || otherMode(k, r.Region) && s.stocked(key) < s.want(key) {
+			continue
 		}
-		if region != "" {
-			s.wants[region] = true
-		}
-		changed := s.changed
-		s.mu.Unlock()
-		s.wakeUp()
-		select {
-		case <-changed:
-		case <-t.C:
-			return geo.Photo{}, false
-		case <-ctx.Done():
-			return geo.Photo{}, false
+		if to == nil || strings.EqualFold(r.Region, key) && !strings.EqualFold(to.Region, key) {
+			to = r
 		}
 	}
-}
-
-// pick is the index of the photo take gives for region, or -1: the oldest
-// in it, but for a region not in GEO_KEEP, one a GEO_KEEP region can spare
-// if there is one, so a plain /geo leaves the kept photo for its region.
-// s.mu is held.
-func (s *server) pick(region string) int {
-	if !slices.ContainsFunc(s.cfg.Keep, func(k string) bool { return strings.EqualFold(k, region) }) {
-		if i := slices.IndexFunc(s.buffer, func(p geo.Photo) bool { return s.in(p, region) && s.droppable(p) }); i >= 0 {
-			return i
-		}
+	if to != nil {
+		to.Photos = append(to.Photos, k)
+		s.startReadyLocked(to)
+	} else {
+		s.stock = append(s.stock, k)
 	}
-	return s.match(region)
-}
-
-// match is the index of the oldest photo in the buffer that is in region
-// ("" is GEO_REGIONS), or -1. s.mu is held.
-func (s *server) match(region string) int {
-	return slices.IndexFunc(s.buffer, func(p geo.Photo) bool { return s.in(p, region) })
+	s.trimLocked()
+	s.changedLocked()
+	n := s.held()
+	s.mu.Unlock()
+	s.save()
+	if to != nil {
+		s.log.Printf("a %s photo is ready for game %s; %d kept in all", p.Source, to.ID, n)
+	} else {
+		s.log.Printf("a %s photo is ready; %d kept in all", p.Source, n)
+	}
 }
 
 // offroad is the token in a region that asks for photos off roads, as in
@@ -275,8 +253,8 @@ func splitOffroad(region string) (bool, string) {
 	return off, strings.Join(rest, ",")
 }
 
-// withOffroad is rest with the offroad token first if off: the region a
-// /geo offroad keys the buffer by.
+// withOffroad is rest with the offroad token first if off: the region key
+// of a /geo offroad.
 func withOffroad(off bool, rest string) string {
 	switch {
 	case !off:
@@ -289,7 +267,7 @@ func withOffroad(off bool, rest string) string {
 
 // in reports whether p is in region ("" is GEO_REGIONS, and empty too the
 // world), and off roads if region asks for that. s.mu is held.
-func (s *server) in(p geo.Photo, region string) bool {
+func (s *server) in(p kept, region string) bool {
 	off, region := splitOffroad(region)
 	if off && !p.Offroad {
 		return false
@@ -325,7 +303,7 @@ func (s *server) seedsLocked(region string) (*geo.Seeds, error) {
 	return seeds, err
 }
 
-// wakeUp tells the prefetcher to look at the buffer again, without waiting.
+// wakeUp tells the prefetcher to look for work again, without waiting.
 func (s *server) wakeUp() {
 	select {
 	case s.wake <- struct{}{}:
