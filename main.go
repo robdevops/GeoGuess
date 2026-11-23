@@ -1,4 +1,4 @@
-// Command geoguess is GeoGuess, a GeoGuessr-style game for signalbot: the
+// Command geoguess is GeoGuess, a geo guesser game for signalbot: the
 // bot posts a street-level photo, players answer with a location, and when
 // time is up the bot names the place and ranks players by how far off
 // they were.

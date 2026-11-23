@@ -1,6 +1,6 @@
 # GeoGuess
 
-A GeoGuessr-style game for [signalbot](https://github.com/robdevops/signalbot).
+A geo guesser game for [signalbot](https://github.com/robdevops/signalbot).
 `/geo` posts a street-level photo, and players guess where it was taken by
 sending a location or typed coordinates. When time is up, the bot names
 the place and ranks players by how far off they were. A game is 3 rounds.
