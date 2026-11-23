@@ -49,7 +49,7 @@ A length and regions combine, as in `/geo europe 90s`.
 roads: on a footpath, track or trail, or in a park, nature, a beach or
 the countryside. It combines with a length and regions in any order, as
 in `/geo offroad AU,NZ 90s`, and its intro says "off-road". Before any
-photo is downloaded, GeoGuess sends the spots of up to 25 of an area's
+photo is downloaded, GeoGuess sends the spots of up to 40 of an area's
 candidate photos to OpenStreetMap's Overpass API in one query, which
 returns the drivable roads within about 40 m of each (`highway` motorway
 to residential, service, living street, busway and their links) and the
@@ -129,6 +129,22 @@ kinds stay short; photos of a kind no longer kept are dropped first, then
 the oldest. A game takes the photos found for its own kind first, then
 those another kind can spare, then any other in its region (but an
 off-road one only if spare).
+
+### How a photo is found
+
+A search picks a seed region, then a random area about 4 km across in it
+(0.04°). On Mapillary it first surveys the area, asking only for up to
+1,000 photos' IDs, sequences and positions; if Mapillary answers with a
+server error or takes over 35 seconds (a dense city), it surveys a random
+quarter of the area instead, down to about 500 m across. From the survey
+it picks one photo at random from each sequence (a sequence is one drive
+or walk, so its photos look alike), up to 40 in a random order, and asks
+for their details (date, camera, quality, size, credit) in one call.
+Panoramax lists the area's photos in one search. The checks then go
+cheapest first: date, daylight, quality, size and GPS drift from the
+details, the off-road check if asked for, and only then at most 3
+downloads an area, each checked for exposure, blur, sky and captions
+before its place is named.
 
 ### Reaching the bot
 

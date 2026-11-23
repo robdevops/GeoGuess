@@ -19,7 +19,7 @@ const OverpassURL = "https://overpass-api.de/api/interpreter"
 // The Overpass query's limits: the spots looked up in one query, the
 // server's time and memory for it, and the most of its answer read.
 const (
-	overpassBatch   = 25
+	overpassBatch   = 40
 	overpassTimeout = 15 // seconds
 	overpassMaxSize = 64 << 20
 	overpassLimit   = 4 << 20

@@ -5,22 +5,38 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math/rand/v2"
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 	"time"
 )
 
 // MapillaryURL is Mapillary's Graph API.
 const MapillaryURL = "https://graph.mapillary.com"
 
-// mapillaryFields are the fields a search asks for.
+// mapillaryFields are the fields asked for of each picked image.
 const mapillaryFields = "id,computed_geometry,geometry,captured_at,camera_type,is_pano,quality_score,width,height,sequence,creator,thumb_2048_url"
 
-// mapillaryLimit is the most images one search returns.
-const mapillaryLimit = 100
+// The survey of a box: its light fields, the most images it lists, how
+// long it may take before the box is split, and the smallest box (by half
+// its side, in degrees) it splits down to.
+const (
+	surveyFields  = "id,sequence,computed_geometry"
+	surveyLimit   = 1000
+	surveyTimeout = 35 * time.Second
+	minSurveyHalf = 0.0025
+)
 
-// maxMapillaryAnswer caps one search's answer.
+// mapillaryPicks is the most images a box offers, one from each of as many
+// sequences; mapillaryBatch is the most IDs asked for in one details call.
+const (
+	mapillaryPicks = 40
+	mapillaryBatch = 50
+)
+
+// maxMapillaryAnswer caps one answer.
 const maxMapillaryAnswer = 4 << 20
 
 // Mapillary searches Mapillary's Graph API v4. Its photos are CC BY-SA 4.0.
@@ -28,13 +44,15 @@ type Mapillary struct {
 	url    string
 	token  string
 	client *http.Client
+	survey time.Duration // surveyTimeout; shorter in tests
+	batch  int           // mapillaryBatch; smaller in tests
 }
 
 // NewMapillary is a Mapillary client for the API at base (MapillaryURL),
 // sending token (MLY|…) as "Authorization: OAuth <token>": Mapillary's
 // answers to a Bearer token hold no data.
 func NewMapillary(base, token string, client *http.Client) *Mapillary {
-	return &Mapillary{url: base, token: token, client: client}
+	return &Mapillary{url: base, token: token, client: client, survey: surveyTimeout, batch: mapillaryBatch}
 }
 
 // Name is "Mapillary".
@@ -57,58 +75,162 @@ type mapillaryImage struct {
 	Thumb string `json:"thumb_2048_url"`
 }
 
-type mapillaryAnswer struct {
-	Data  []mapillaryImage `json:"data"`
-	Error *struct {
-		Code int `json:"code"`
-	} `json:"error"`
+// mapillaryError is the error a Graph API answer may hold.
+type mapillaryError struct {
+	Code int `json:"code"`
 }
 
-// Candidates searches b, which must be under 0.01 deg². An empty answer is
-// asked again once, since Mapillary sometimes leaves out images it has; a
-// server error (Mapillary's answer to an area too dense to list) falls back
-// to a radius search around b's centre.
+type mapillaryAnswer struct {
+	Data  []mapillaryImage `json:"data"`
+	Error *mapillaryError  `json:"error"`
+}
+
+// Candidates surveys b, which must be under 0.01 deg², for its images' IDs
+// and sequences, picks one image at random from each sequence, up to
+// mapillaryPicks of them in a random order, and asks for those images'
+// details. A survey that fails with a server error or takes too long (an
+// area too dense to list) surveys a random quarter of the box instead,
+// down to a box minSurveyHalf across each way from its centre.
 func (m *Mapillary) Candidates(ctx context.Context, b BBox) ([]Candidate, error) {
-	q := url.Values{"bbox": {b.String()}, "fields": {mapillaryFields}, "limit": {strconv.Itoa(mapillaryLimit)}}
-	images, err := m.search(ctx, q)
-	if err == nil && len(images) == 0 {
-		images, err = m.search(ctx, q)
-	}
-	if se := (StatusError{}); errors.As(err, &se) && se.Code >= 500 {
-		c := b.Centre()
-		images, err = m.search(ctx, url.Values{
-			"lat": {coord(c.Lat)}, "lng": {coord(c.Lon)}, "radius": {"50"},
-			"fields": {mapillaryFields}, "limit": {strconv.Itoa(mapillaryLimit)},
-		})
-	}
+	images, err := m.surveyBox(ctx, b)
 	if err != nil {
 		return nil, err
 	}
-	out := make([]Candidate, 0, len(images))
-	for _, im := range images {
-		if c, ok := im.candidate(); ok {
-			out = append(out, c)
+	ids := pickPerSequence(images, mapillaryPicks)
+	out := make([]Candidate, 0, len(ids))
+	for len(ids) > 0 {
+		batch := ids[:min(len(ids), m.batch)]
+		ids = ids[len(batch):]
+		details, err := m.details(ctx, batch)
+		if err != nil {
+			return nil, err
+		}
+		for _, id := range batch {
+			if im, ok := details[id]; ok {
+				if c, ok := im.candidate(); ok {
+					out = append(out, c)
+				}
+			}
 		}
 	}
 	return out, nil
 }
 
-// search is one call to /images.
-func (m *Mapillary) search(ctx context.Context, q url.Values) ([]mapillaryImage, error) {
-	r := request{client: m.client, source: m.Name(), url: m.url + "/images?" + q.Encode(), auth: "OAuth " + m.token, limit: maxMapillaryAnswer}
-	body, err := r.get(ctx)
-	var a mapillaryAnswer
-	jerr := json.Unmarshal(body, &a)
-	if a.Error != nil && a.Error.Code == 4 {
-		return nil, ErrSlowDown // "application request limit reached"
+// surveyBox lists b's images by their light fields, splitting b into a
+// random quarter while Mapillary can't list it. An empty answer is asked
+// again once, since Mapillary sometimes leaves out images it has.
+func (m *Mapillary) surveyBox(ctx context.Context, b BBox) ([]mapillaryImage, error) {
+	for {
+		images, err := m.surveyOnce(ctx, b)
+		if err == nil && len(images) == 0 {
+			images, err = m.surveyOnce(ctx, b)
+		}
+		if err == nil || !tooDense(err) || ctx.Err() != nil {
+			return images, err
+		}
+		half := max(b.MaxLat-b.MinLat, b.MaxLon-b.MinLon) / 4 // the quarter's
+		if half < minSurveyHalf*0.999 {
+			return nil, err
+		}
+		b = b.quarter(rand.IntN(4))
 	}
-	if err != nil {
+}
+
+// errSurveyTimeout is a survey that took longer than its own timeout.
+var errSurveyTimeout = errors.New("Mapillary: survey timed out")
+
+// tooDense reports whether err is Mapillary failing to list a box: a
+// server error or a survey that timed out.
+func tooDense(err error) bool {
+	se := StatusError{}
+	return errors.Is(err, errSurveyTimeout) || (errors.As(err, &se) && se.Code >= 500)
+}
+
+// surveyOnce is one survey of b, given at most m.survey.
+func (m *Mapillary) surveyOnce(ctx context.Context, b BBox) ([]mapillaryImage, error) {
+	sctx, cancel := context.WithTimeout(ctx, m.survey)
+	defer cancel()
+	q := url.Values{"bbox": {b.String()}, "fields": {surveyFields}, "limit": {strconv.Itoa(surveyLimit)}}
+	var a mapillaryAnswer
+	err := m.get(sctx, "/images?"+q.Encode(), &a)
+	if err != nil && ctx.Err() == nil && sctx.Err() != nil {
+		return nil, errSurveyTimeout
+	}
+	if err == nil && a.Error != nil {
+		err = fmt.Errorf("%s: unreadable answer", m.Name())
+	}
+	return a.Data, err
+}
+
+// details is the full fields of the images ids, by ID; an ID Mapillary
+// leaves out is missing.
+func (m *Mapillary) details(ctx context.Context, ids []string) (map[string]mapillaryImage, error) {
+	q := url.Values{"ids": {strings.Join(ids, ",")}, "fields": {mapillaryFields}}
+	var a map[string]json.RawMessage
+	if err := m.get(ctx, "/?"+q.Encode(), &a); err != nil {
 		return nil, err
 	}
-	if jerr != nil || a.Error != nil {
+	if _, ok := a["error"]; ok {
 		return nil, fmt.Errorf("%s: unreadable answer", m.Name())
 	}
-	return a.Data, nil
+	out := make(map[string]mapillaryImage, len(a))
+	for id, raw := range a {
+		var im mapillaryImage
+		if json.Unmarshal(raw, &im) == nil && im.ID == id {
+			out[id] = im
+		}
+	}
+	return out, nil
+}
+
+// get is one call to the Graph API at path, decoding its answer into v. A
+// rate limit (Mapillary's error code 4, or a 429 or 403) is ErrSlowDown.
+func (m *Mapillary) get(ctx context.Context, path string, v any) error {
+	r := request{client: m.client, source: m.Name(), url: m.url + path, auth: "OAuth " + m.token, limit: maxMapillaryAnswer}
+	body, err := r.get(ctx)
+	var e struct {
+		Error *mapillaryError `json:"error"`
+	}
+	if json.Unmarshal(body, &e) == nil && e.Error != nil && e.Error.Code == 4 {
+		return ErrSlowDown // "application request limit reached"
+	}
+	if se := (StatusError{}); errors.As(err, &se) && (se.Code == http.StatusTooManyRequests || se.Code == http.StatusForbidden) {
+		return ErrSlowDown
+	}
+	if err != nil {
+		return err
+	}
+	if json.Unmarshal(body, v) != nil {
+		return fmt.Errorf("%s: unreadable answer", m.Name())
+	}
+	return nil
+}
+
+// pickPerSequence is the ID of one image chosen at random from each
+// sequence in images (an image with no sequence is its own), at most n of
+// them, in a random order.
+func pickPerSequence(images []mapillaryImage, n int) []string {
+	bySeq := map[string][]string{}
+	var seqs []string
+	for _, im := range images {
+		if im.ID == "" {
+			continue
+		}
+		seq := im.Sequence
+		if seq == "" {
+			seq = "image:" + im.ID
+		}
+		if _, ok := bySeq[seq]; !ok {
+			seqs = append(seqs, seq)
+		}
+		bySeq[seq] = append(bySeq[seq], im.ID)
+	}
+	ids := make([]string, len(seqs))
+	for i, seq := range seqs {
+		ids[i] = bySeq[seq][rand.IntN(len(bySeq[seq]))]
+	}
+	rand.Shuffle(len(ids), func(i, j int) { ids[i], ids[j] = ids[j], ids[i] })
+	return ids[:min(len(ids), n)]
 }
 
 // candidate is im as a Candidate, if it has an ID and a position.

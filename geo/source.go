@@ -39,6 +39,24 @@ func (b BBox) Centre() Point {
 	return Point{Lat: (b.MinLat + b.MaxLat) / 2, Lon: (b.MinLon + b.MaxLon) / 2}
 }
 
+// quarter is one of b's four quarters, 0 to 3: south-west, south-east,
+// north-west and north-east.
+func (b BBox) quarter(i int) BBox {
+	c := b.Centre()
+	q := b
+	if i&1 == 0 {
+		q.MaxLon = c.Lon
+	} else {
+		q.MinLon = c.Lon
+	}
+	if i&2 == 0 {
+		q.MaxLat = c.Lat
+	} else {
+		q.MinLat = c.Lat
+	}
+	return q
+}
+
 func coord(f float64) string { return strconv.FormatFloat(f, 'f', 6, 64) }
 
 // Candidate is one photo a source offers, from its metadata alone.

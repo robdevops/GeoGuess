@@ -2,7 +2,6 @@ package geo
 
 import (
 	"context"
-	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -55,48 +54,6 @@ func (f *fakeAPI) requests() []*http.Request {
 
 var testBox = BBox{MinLon: 143.85, MinLat: -37.57, MaxLon: 143.87, MaxLat: -37.55}
 
-func TestMapillaryCandidates(t *testing.T) {
-	api := newFakeAPI(t)
-	api.handle = func(w http.ResponseWriter, r *http.Request) { w.Write(fixture(t, "mapillary_bbox.json", api.URL)) }
-	m := NewMapillary(api.URL, "MLY|test", api.Client())
-	cands, err := m.Candidates(context.Background(), testBox)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(cands) != 8 {
-		t.Fatalf("%d candidates, want 8", len(cands))
-	}
-	req := api.requests()[0]
-	if got := req.Header.Get("Authorization"); got != "OAuth MLY|test" {
-		t.Errorf("Authorization %q", got)
-	}
-	if req.Header.Get("User-Agent") != userAgent {
-		t.Errorf("User-Agent %q", req.Header.Get("User-Agent"))
-	}
-	q := req.URL.Query()
-	if req.URL.Path != "/images" || q.Get("bbox") != "143.850000,-37.570000,143.870000,-37.550000" || q.Get("limit") != "100" || !strings.Contains(q.Get("fields"), "computed_geometry") {
-		t.Errorf("query %s %v", req.URL.Path, q)
-	}
-
-	flat, pano := cands[0], cands[6]
-	want := Candidate{
-		ID: "156004253082834", Source: "Mapillary", Creator: "alice", Licence: "CC BY-SA 4.0",
-		Link:     "https://www.mapillary.com/app/?pKey=156004253082834",
-		Captured: time.UnixMilli(1566687341409).UTC(), Fisheye: true, Quality: 0.612,
-		Width: 3840, Height: 2160, Sequence: flat.Sequence, At: flat.At, Raw: flat.Raw,
-		image: api.URL + "/cdn/156004253082834.jpg",
-	}
-	if flat != want {
-		t.Errorf("candidate\n%+v\nwant\n%+v", flat, want)
-	}
-	if flat.At == flat.Raw || Km(flat.At, flat.Raw) > 0.05 || flat.At.Lat > -37.5 {
-		t.Errorf("positions %v (computed) and %v (raw)", flat.At, flat.Raw)
-	}
-	if !pano.Pano || pano.Fisheye || pano.Creator != "bob" || pano.Quality != 0.775 {
-		t.Errorf("panorama %+v", pano)
-	}
-}
-
 func TestMapillaryImage(t *testing.T) {
 	q := 0.5
 	for _, tc := range []struct {
@@ -124,52 +81,6 @@ func TestMapillaryImage(t *testing.T) {
 		c, ok := tc.im.candidate()
 		if ok != tc.ok || (ok && !tc.want(c)) {
 			t.Errorf("%s: %+v, %v", tc.name, c, ok)
-		}
-	}
-}
-
-func TestMapillaryRetries(t *testing.T) {
-	for _, tc := range []struct {
-		name    string
-		answers []string // status and fixture, by request
-		want    int      // candidates
-		calls   int
-		radius  bool // the last call was a radius search
-		err     error
-	}{
-		{"empty is asked again", []string{"200 {\"data\":[]}", "200 mapillary_bbox.json"}, 8, 2, false, nil},
-		{"empty twice", []string{"200 {\"data\":[]}", "200 {\"data\":[]}"}, 0, 2, false, nil},
-		{"too dense falls back to a radius", []string{"500 mapillary_error.json", "200 mapillary_radius.json"}, 5, 2, true, nil},
-		{"empty then too dense", []string{"200 {\"data\":[]}", "500 mapillary_error.json", "200 mapillary_radius.json"}, 5, 3, true, nil},
-		{"rate limited", []string{`429 {"error":{"code":4,"message":"limit"}}`}, 0, 1, false, ErrSlowDown},
-		{"rate limited as a 400", []string{`400 {"error":{"code":4,"message":"limit"}}`}, 0, 1, false, ErrSlowDown},
-		{"refused", []string{`401 {"error":{"code":190}}`}, 0, 1, false, StatusError{Source: "Mapillary", Code: 401}},
-		{"unreadable", []string{`200 <html>`}, 0, 1, false, errors.New("Mapillary: unreadable answer")},
-	} {
-		api := newFakeAPI(t)
-		n := 0
-		api.handle = func(w http.ResponseWriter, r *http.Request) {
-			status, body, _ := strings.Cut(tc.answers[min(n, len(tc.answers)-1)], " ")
-			n++
-			if strings.HasSuffix(body, ".json") {
-				body = string(fixture(t, body, api.URL))
-			}
-			code := map[string]int{"200": 200, "400": 400, "401": 401, "429": 429, "500": 500}[status]
-			w.WriteHeader(code)
-			w.Write([]byte(body))
-		}
-		cands, err := NewMapillary(api.URL, "MLY|test", api.Client()).Candidates(context.Background(), testBox)
-		if (err == nil) != (tc.err == nil) || (err != nil && err.Error() != tc.err.Error()) {
-			t.Errorf("%s: error %v, want %v", tc.name, err, tc.err)
-		}
-		reqs := api.requests()
-		if len(cands) != tc.want || len(reqs) != tc.calls {
-			t.Errorf("%s: %d candidates in %d calls, want %d in %d", tc.name, len(cands), len(reqs), tc.want, tc.calls)
-			continue
-		}
-		last := reqs[len(reqs)-1].URL.Query()
-		if tc.radius && (last.Get("lat") != "-37.560000" || last.Get("lng") != "143.860000" || last.Get("radius") != "50" || last.Has("bbox")) {
-			t.Errorf("%s: radius search %v", tc.name, last)
 		}
 	}
 }

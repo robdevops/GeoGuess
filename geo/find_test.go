@@ -6,6 +6,7 @@ import (
 	"math/rand/v2"
 	"net/http"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -241,10 +242,31 @@ func TestFindOffroad(t *testing.T) {
 		t.Errorf("roads only: %v, fetched %v, failed %v", err, src.fetched, *fails)
 	}
 
+	// A box's first 40 candidates (all of a Mapillary box's picks) are
+	// looked up in one query.
+	src.cands = nil
+	for i := range 45 {
+		src.cands = append(src.cands, c("field"+strconv.Itoa(i), Point{field.Lat - 0.001*float64(i), field.Lon}))
+	}
+	before := len(api.requests())
+	if _, err := f.Find(context.Background()); err != ErrNotFound {
+		t.Errorf("fields: %v", err)
+	}
+	reqs := api.requests()[before:]
+	if len(reqs) == 0 {
+		t.Error("fields: no query")
+	}
+	for _, r := range reqs {
+		r.ParseForm()
+		if n := strings.Count(r.PostForm.Get("data"), "is_in("); n != 40 {
+			t.Errorf("fields: %d spots in a query", n)
+		}
+	}
+
 	// Overpass rate-limiting the check stops the search at once.
 	src.cands, src.fetched = []Candidate{c("path", path), c("path2", path)}, nil
 	api.handle = func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusTooManyRequests) }
-	before := len(api.requests())
+	before = len(api.requests())
 	if _, err := f.Find(context.Background()); err != ErrOverpassBusy || len(api.requests())-before != 1 || len(src.fetched) != 0 {
 		t.Errorf("rate-limited: %v after %d requests, fetched %v", err, len(api.requests())-before, src.fetched)
 	}
