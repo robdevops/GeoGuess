@@ -15,7 +15,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/robdevops/chat-plugin-geoguess/internal/fsx"
+	"github.com/robdevops/GeoGuess/internal/fsx"
 )
 
 // MaxBytes caps one saved document, its final newline included, so a

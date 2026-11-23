@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/robdevops/chat-plugin-geoguess/geo"
+	"github.com/robdevops/GeoGuess/geo"
 )
 
 // finder finds a photo worth a round in regions ("" is GEO_REGIONS): the

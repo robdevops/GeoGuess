@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/robdevops/chat-plugin-geoguess/geo"
+	"github.com/robdevops/GeoGuess/geo"
 	"github.com/robdevops/signalbot/addon"
 )
 

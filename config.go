@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/robdevops/chat-plugin-geoguess/geo"
+	"github.com/robdevops/GeoGuess/geo"
 )
 
 // config is GeoGuess's settings, every one from a GEO_ variable, the only

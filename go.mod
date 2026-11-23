@@ -1,4 +1,4 @@
-module github.com/robdevops/chat-plugin-geoguess
+module github.com/robdevops/GeoGuess
 
 go 1.27.0
 

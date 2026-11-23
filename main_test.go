@@ -17,7 +17,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/robdevops/chat-plugin-geoguess/geo"
+	"github.com/robdevops/GeoGuess/geo"
 )
 
 // fakeClock is a clock whose time moves only when a test says.

@@ -25,8 +25,8 @@ import (
 	"runtime/debug"
 	"syscall"
 
-	"github.com/robdevops/chat-plugin-geoguess/geo"
-	"github.com/robdevops/chat-plugin-geoguess/internal/httpx"
+	"github.com/robdevops/GeoGuess/geo"
+	"github.com/robdevops/GeoGuess/internal/httpx"
 )
 
 // maxLog is the size past which the log is moved aside at start, keeping

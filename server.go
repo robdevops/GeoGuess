@@ -10,8 +10,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/robdevops/chat-plugin-geoguess/geo"
-	"github.com/robdevops/chat-plugin-geoguess/internal/state"
+	"github.com/robdevops/GeoGuess/geo"
+	"github.com/robdevops/GeoGuess/internal/state"
 	"github.com/robdevops/signalbot/addon"
 )
 

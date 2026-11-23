@@ -161,7 +161,7 @@ the model or kept in the chat's history.
 What it sends out is about photos, never about players: map areas to
 search and photo IDs to Mapillary and Panoramax, and the answer's
 coordinates to Nominatim for the place's name, each with the user agent
-`geoguess (+https://github.com/robdevops/chat-plugin-geoguess)`.
+`geoguess (+https://github.com/robdevops/GeoGuess)`.
 
 A guess deleted for everyone afterwards is not passed on to GeoGuess,
 which keeps only its distance anyway.

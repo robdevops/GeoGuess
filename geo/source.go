@@ -80,7 +80,7 @@ var ErrSlowDown = errors.New("rate limited")
 const maxPhoto = 12 << 20
 
 // userAgent names the program, never the person running it.
-const userAgent = "geoguess (+https://github.com/robdevops/chat-plugin-geoguess)"
+const userAgent = "geoguess (+https://github.com/robdevops/GeoGuess)"
 
 // pacer spaces requests at least every apart.
 type pacer struct {
