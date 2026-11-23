@@ -57,14 +57,14 @@ You need signalbot main at `d685491` or newer, and Go 1.27 or newer.
    `GEO_REGIONS` says otherwise.
 
 3. **Add it to the MCP servers file** (`MCP_CONFIG`). It must be called
-   `geo`. Put your group IDs in `chats`, or `["all"]`; add `"dms": true`
-   to play in DMs too.
+   `geo`. `chats: ["all"]` plays in every group; list group IDs to limit
+   it, and add `"dms": true` to play in DMs too.
 
    ```jsonc
    "geo": {
      "command": "/opt/signalbot-addons/geoguess",
      "chat_commands": {"geo": {"tool": "geo", "direct": true, "example": "/geo 3m", "timeout": "60s"}},
-     "addon": {"chats": ["<group id>"], "post": true, "react": true, "watch": true, "watch_max": "1h"}
+     "addon": {"chats": ["all"], "post": true, "react": true, "watch": true, "watch_max": "1h"}
    }
    ```
 
