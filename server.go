@@ -135,20 +135,20 @@ const (
 	// late guess still stays out of the chat's history.
 	watchSlack = 5 * time.Second
 	// gameRounds is the rounds in a game, and maxGame the longest a game
-	// may run, with the gap before each round's photo: with lobbyMax and
-	// fetchMax, the time to gather its photos, within the bot's default
-	// watch_max of 1h.
+	// may run, with the gap before each round's photo: with lobbyMax (or,
+	// without a lobby, fetchMax, the time to gather its photos), within the
+	// bot's default watch_max of 1h.
 	gameRounds = 3
 	// gapTime is the pause between a round's results and the next photo,
 	// so players can read the results.
 	gapTime = 5 * time.Second
-	maxGame = 45 * time.Minute
+	maxGame = 44 * time.Minute
 	// The lobby: how long after the last join the game starts, the players
 	// it needs, and how long it waits for them, within the watch's hour
 	// with fetchMax and maxGame.
 	lobbyWait  = 30 * time.Second
 	minPlayers = 2
-	lobbyMax   = 5 * time.Minute
+	lobbyMax   = 15 * time.Minute
 )
 
 // newServer loads the state saved in cfg.StateDir with its kept photos,

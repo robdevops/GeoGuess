@@ -1648,7 +1648,7 @@ func TestFetchLobby(t *testing.T) {
 	began := clk.Now()
 	r := c.geo("europe 1m", from(clk, chat, alice))
 	if !strings.Contains(words(r), "React to this message with any emoji to join") || r.Meta == nil || !r.Meta.Watch.Reactions ||
-		r.Meta.Watch.Until != began.Add(gameTime(3, time.Minute, 0)+lobbyMax+fetchMax+watchSlack).Format(time.RFC3339) {
+		r.Meta.Watch.Until != began.Add(gameTime(3, time.Minute, 0)+lobbyMax+watchSlack).Format(time.RFC3339) {
 		t.Fatalf("lobby %+v", r)
 	}
 	close(photos.open)

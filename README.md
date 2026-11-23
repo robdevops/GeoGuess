@@ -18,7 +18,7 @@ the place and ranks players by how far off they were. A game is 3 rounds.
 
 - **Join:** in a group, react to `/geo`'s answer with any emoji. The
   starter must react too. It starts 30s after the last join, once at
-  least 2 have joined. It is called off after 5 minutes without 2.
+  least 2 have joined. It is called off after 15 minutes without 2.
 - **Telegram:** the bot sees reactions only as the group's admin. With
   privacy mode on (the default), reply to the round's photo to guess.
 - **DMs:** there is no lobby. The game starts at once, and a round ends

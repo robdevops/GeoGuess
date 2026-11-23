@@ -22,7 +22,7 @@ In a group, a game starts with a lobby: react to `/geo`'s answer with any
 emoji to join (take the reaction back to leave). Whoever starts it must
 react too. It starts 30 seconds after the last player joins, once there
 are at least 2 of you, and is called off if fewer than 2 have joined after
-5 minutes. On Telegram the bot sees reactions only as the group's admin,
+15 minutes. On Telegram the bot sees reactions only as the group's admin,
 so without that nobody can join. In a DM there's no lobby: the game
 starts at once, and a round ends as soon as you guess.
 
@@ -42,7 +42,7 @@ A guess scores 5000·e^(−km/2000) points, rounded, and the full 5000
 within 25 m.
 
 A round's length is 30s to 30m. The game, with a possible tie-breaker,
-lasts at most 45 minutes; `/geo` with rounds too long for that says so.
+lasts at most 44 minutes; `/geo` with rounds too long for that says so.
 A length and regions combine, as in `/geo europe 90s`.
 
 `/geo end` (or `stop`) reveals the round and the totals; in the lobby it
@@ -162,9 +162,10 @@ read guesses and the lobby's reactions).
 
 ### Timeouts
 
-A game's watch lasts at most 55 minutes and 5 seconds (a lobby's 5
-minutes, 5 to gather its photos, then at most 45 for the game), so the
-default `watch_max` of 1h is enough. A watch is set once, by `/geo`'s
+A game's watch lasts at most 59 minutes and 5 seconds (a lobby's 15
+minutes, in which its photos are gathered too, or without a lobby 5 to
+gather them, then at most 44 for the game), so the default `watch_max`
+of 1h is enough. A watch is set once, by `/geo`'s
 answer, and can't be extended. `/geo` waits at most about 3 seconds for
 photos before it answers, so any `timeout` above 5 seconds will do.
 GeoGuess never waits past the bot's timeout anyway, less a few seconds to

@@ -230,10 +230,10 @@ func (s *server) start(ctx context.Context, c *addon.Context, length time.Durati
 	}
 	now = s.clock.Now()
 	r.Until = now.Add(gameTime(of, length, s.cfg.gap))
-	if lobby || len(r.Photos) < of { // round 1 may wait for its photos
+	if !lobby && len(r.Photos) < of { // round 1 waits for its photos
 		r.Until = r.Until.Add(fetchMax)
 	}
-	if lobby { // players join by reacting to the intro first
+	if lobby { // players join by reacting to the intro first; photos are gathered meanwhile, until GiveUp, within lobbyMax
 		r.Lobby, r.Waiting, r.Joined, r.CallOff = true, false, nil, now.Add(lobbyMax)
 		r.Until = r.Until.Add(lobbyMax)
 		s.armLobby(r)
