@@ -32,51 +32,47 @@ the place and ranks players by how far off they were. A game is 3 rounds.
 - **After:** for an hour, a reply to the game's messages that asks the
   bot gets "That game is over. Start another with /geo."
 
-## Install
+## Quick start
 
-It needs signalbot main at d685491 or newer, and Go 1.27 or newer.
+You need signalbot main at `d685491` or newer, and Go 1.27 or newer.
 
-```
-git clone https://github.com/robdevops/chat-plugin-geoguess.git
-cd chat-plugin-geoguess
-CGO_ENABLED=0 go build -ldflags='-s -w' -o /opt/signalbot-addons/geoguess .
-```
+1. **Build it:**
 
-Add it to the MCP servers file (`MCP_CONFIG`). It must be called `geo`:
+   ```
+   git clone https://github.com/robdevops/chat-plugin-geoguess.git
+   cd chat-plugin-geoguess
+   CGO_ENABLED=0 go build -ldflags='-s -w' -o /opt/signalbot-addons/geoguess .
+   ```
 
-```jsonc
-"geo": {
-  "command": "/opt/signalbot-addons/geoguess",
-  "chat_commands": {"geo": {"tool": "geo", "direct": true, "example": "/geo 3m", "timeout": "60s"}},
-  "addon": {"chats": ["<group id>"], "post": true, "react": true, "watch": true, "watch_max": "1h"}
-}
-```
+2. **Get a Mapillary token.** Register an app at
+   [mapillary.com/dashboard/developers](https://www.mapillary.com/dashboard/developers)
+   and copy its client token (`MLY|…`). Put it in signalbot's environment
+   file (`/etc/signalbot.env`):
 
-- `post` sends the results.
-- `react` puts 📍 on a counted guess.
-- `watch` reads guesses and the lobby's reactions.
-- `chats` takes group IDs, or `["all"]`. Add `"dms": true` to play in DMs too.
-- Under Docker, mount `/opt/signalbot-addons` read-only at the same path.
+   ```
+   GEO_MAPILLARY_TOKEN=MLY|…
+   ```
 
-The state dir needs no setup: signalbot sets it and GeoGuess creates it.
+   Without it, photos come from Panoramax only, in France unless
+   `GEO_REGIONS` says otherwise.
 
-## Settings
+3. **Add it to the MCP servers file** (`MCP_CONFIG`). It must be called
+   `geo`. Put your group IDs in `chats`, or `["all"]`; add `"dms": true`
+   to play in DMs too.
 
-| Variable | Default | Description |
-|---|---|---|
-| `GEO_STATE_DIR` | signalbot's `addons/geo` | Where it keeps `geo.json` and its log |
-| `GEO_MAPILLARY_TOKEN` | empty | Mapillary client token (`MLY\|…`). Empty means Panoramax only, in France unless `GEO_REGIONS` says otherwise |
-| `GEO_MEMLIMIT` | `200MiB` | Memory limit, written as `GOMEMLIMIT` is; at least `16MiB` |
-| `GEO_ROUND` | `3m` | Default round length, 30s to 30m |
-| `GEO_REGIONS` | empty (world) | Continents or ISO country codes, comma-separated |
-| `GEO_MIN_QUALITY` | `0.5` | Minimum Mapillary `quality_score` (0 to 1) |
-| `GEO_MAX_AGE_YEARS` | `10` | Ignore older photos (above 0, up to 100) |
-| `GEO_BUFFER` | `3` | Checked photos kept ready (1 to 20) |
-| `GEO_KEEP` | empty | Regions to always keep one photo ready for, such as `AU,NZ` |
-| `GEO_WAIT` | `50s` | How long `/geo` waits for a photo, 5s to 110s. Keep the command's `timeout` above it |
-| `GEO_NOMINATIM_URL` | `https://nominatim.openstreetmap.org` | Reverse geocoder for place names; `https://` only |
-| `GEO_PANORAMAX_URL` | `https://api.panoramax.xyz` | Panoramax API; `https://` only |
-| `GEO_MAPILLARY_URL` | `https://graph.mapillary.com` | Mapillary Graph API; `https://` only |
+   ```jsonc
+   "geo": {
+     "command": "/opt/signalbot-addons/geoguess",
+     "chat_commands": {"geo": {"tool": "geo", "direct": true, "example": "/geo 3m", "timeout": "60s"}},
+     "addon": {"chats": ["<group id>"], "post": true, "react": true, "watch": true, "watch_max": "1h"}
+   }
+   ```
+
+4. **Restart signalbot** and type `/geo` in the group.
+
+Everything else has a sensible default. All the settings, the
+permissions, and the Docker and systemd notes are in
+[docs/DETAILS.md](docs/DETAILS.md#settings-in-full).
 
 ## Credits and privacy
 
