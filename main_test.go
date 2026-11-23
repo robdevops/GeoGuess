@@ -153,6 +153,8 @@ type client struct {
 	id      int
 	waiting map[string]chan response
 	lines   int
+
+	subscribed bool // to the outbox, so its news comes as notifications
 }
 
 // rpcIn is a message as the client reads it.
@@ -348,6 +350,44 @@ func (c *client) outbox(cursor string) outboxPage {
 	return p
 }
 
+// subscribe subscribes the session to the outbox.
+func (c *client) subscribe() {
+	c.t.Helper()
+	c.result("resources/subscribe", uriParams{outboxURI}, new(struct{}))
+	c.subscribed = true
+}
+
+// begin is /geo args from ctx in a game whose photos are ready, with no
+// lobby: /geo answers with the game's intro, and round 1's photo follows
+// introPause later as a post, not before, which begin moves the clock on
+// to. It
+// returns /geo's result, round 1's post, the last op in the outbox, and
+// the outbox's cursor past it.
+func (c *client) begin(clk *fakeClock, args string, ctx callContext) (toolResult, outboxOp, string) {
+	c.t.Helper()
+	r := c.geo(args, ctx)
+	if !strings.HasPrefix(words(r), "🌍 **GeoGuess** · ") || !strings.HasSuffix(words(r), ": guess where each photo was taken.") ||
+		len(r.Content) != 1 || r.Meta == nil || r.Meta.Watch == nil {
+		c.t.Fatalf("/geo %s: %+v", args, r)
+	}
+	clk.Advance(introPause - time.Second)
+	held := len(c.outbox("0").Ops)
+	clk.Advance(time.Second)
+	if c.subscribed {
+		c.note()
+	}
+	page := c.outbox("0")
+	if len(page.Ops) != held+1 {
+		c.t.Fatalf("/geo %s: %d ops before introPause, %d after: %+v", args, held, len(page.Ops), page)
+	}
+	o := page.Ops[len(page.Ops)-1]
+	if o.Op != "post" || o.Chat != ctx.Chat || o.ID == "" || o.ID != page.Cursor || len(o.Images) != 1 || o.Images[0].MimeType != "image/jpeg" ||
+		!strings.Contains(o.Text, "🌍 **Where is this?** Send a location before ") {
+		c.t.Fatalf("/geo %s: round 1 %+v", args, o)
+	}
+	return r, o, page.Cursor
+}
+
 // note waits for a notification.
 func (c *client) note() string {
 	c.t.Helper()
@@ -373,6 +413,11 @@ func words(r toolResult) string {
 
 func reacted(r toolResult) bool { return r.Meta != nil && r.Meta.React == pin }
 
+// isAlarm reports whether o is the ⏰ on the post with ID post in chat.
+func isAlarm(o outboxOp, chat, post string) bool {
+	return o.Op == "react" && o.Chat == chat && o.Post == post && post != "" && o.Emoji == alarm && o.Ref == "" && o.Text == ""
+}
+
 // start is a fake clock, a server and a client, with the session
 // initialized and subscribed to the outbox.
 func start(t *testing.T) (*fakeClock, *client, *syncBuffer) {
@@ -386,8 +431,7 @@ func start(t *testing.T) (*fakeClock, *client, *syncBuffer) {
 		"capabilities": map[string]any{"experimental": map[string]any{vendor + "addon": map[string]int{"version": 1}}},
 	}, &init)
 	c.send(`{"jsonrpc":"2.0","method":"notifications/initialized"}`)
-	var empty struct{}
-	c.result("resources/subscribe", uriParams{outboxURI}, &empty)
+	c.subscribe()
 	return clk, c, logs
 }
 
@@ -425,8 +469,8 @@ func TestCaptionNetwork(t *testing.T) {
 		"protocolVersion": protocolVersion,
 		"capabilities":    map[string]any{"experimental": map[string]any{vendor + "addon": map[string]any{"version": 1, "network": "signal"}}},
 	}, &init)
-	r := c.geo("90s", from(clk, chat, alice))
-	if got := words(r); !strings.Contains(got, "Tap **+** → Location") || strings.Contains(got, "📎") {
+	_, photo, _ := c.begin(clk, "90s", from(clk, chat, alice))
+	if got := photo.Text; !strings.Contains(got, "Tap **+** → Location") || strings.Contains(got, "📎") {
 		t.Errorf("caption %q", got)
 	}
 }
@@ -469,21 +513,15 @@ func TestInitializeAndTools(t *testing.T) {
 	}
 }
 
-// A whole round: the photo with its watch, guesses, the timer, and the
-// results in the outbox.
+// A whole round: /geo's intro with its watch, round 1's photo a moment
+// later as a post, guesses, the ⏰, the timer, and the results in the
+// outbox.
 func TestRound(t *testing.T) {
 	clk, c, logs := start(t)
 	began := clk.Now()
 	r := c.geo("90s", from(clk, chat, alice))
-	if len(r.Content) != 2 || r.Content[0].Type != "image" || r.Content[0].MimeType != "image/jpeg" {
-		t.Fatalf("content %+v", r.Content)
-	}
-	if data, _ := base64.StdEncoding.DecodeString(r.Content[0].Data); !bytes.HasPrefix(data, []byte("jpeg ")) {
-		t.Errorf("image %q", data)
-	}
-	want := caption(began.Add(90*time.Second), 90*time.Second, "", true)
-	if words(r) != want || !strings.Contains(want, "(90 sec)") {
-		t.Errorf("caption %q", words(r))
+	if got := words(r); got != "🌍 **GeoGuess** · 1 round of 90 sec: guess where each photo was taken." || len(r.Content) != 1 {
+		t.Fatalf("intro %+v", r.Content)
 	}
 	if r.Meta == nil || r.Meta.Watch == nil {
 		t.Fatalf("no watch: %+v", r.Meta)
@@ -493,8 +531,34 @@ func TestRound(t *testing.T) {
 		w.Until != began.Add(90*time.Second+settle+watchSlack).Format(time.RFC3339) {
 		t.Errorf("watch %+v", w)
 	}
+	if got := words(c.geo("", from(clk, chat, bob))); got != "A game is on: round 1's photo is on its way." {
+		t.Errorf("a second /geo before the photo: %q", got)
+	}
+	if r := c.guess("-37.6, 143.9", from(clk, chat, bob)); reacted(r) {
+		t.Errorf("a guess before the photo: %+v", r)
+	}
 
-	if got := words(c.geo("", from(clk, chat, bob))); got != "A round is on: 1m30s left." {
+	clk.Advance(introPause - time.Second)
+	if p := c.outbox("0"); len(p.Ops) != 0 {
+		t.Fatalf("round 1 before the pause: %+v", p)
+	}
+	clk.Advance(time.Second)
+	c.note()
+	page := c.outbox("0")
+	if len(page.Ops) != 1 || page.Ops[0].Op != "post" || page.Ops[0].Chat != chat || len(page.Ops[0].Images) != 1 || page.Ops[0].Images[0].MimeType != "image/jpeg" {
+		t.Fatalf("round 1 %+v", page)
+	}
+	photo := page.Ops[0]
+	if data, _ := base64.StdEncoding.DecodeString(photo.Images[0].Data); !bytes.HasPrefix(data, []byte("jpeg ")) {
+		t.Errorf("image %q", data)
+	}
+	// The tests have no gap before a round, so round 1 keeps the deadline
+	// /geo gave it and the pause comes off its time.
+	if want := caption(began.Add(90*time.Second), 90*time.Second-introPause, "", true); photo.Text != want {
+		t.Errorf("caption %q\nwant %q", photo.Text, want)
+	}
+
+	if got := words(c.geo("", from(clk, chat, bob))); got != "A round is on: 1m28s left." {
 		t.Errorf("a second /geo: %q", got)
 	}
 	clk.Advance(10 * time.Second)
@@ -510,23 +574,27 @@ func TestRound(t *testing.T) {
 	if r := c.guess("-33.87, 151.21", from(clk, "c_two", bob)); reacted(r) || words(r) != noRound {
 		t.Errorf("a guess in another chat: %+v", r)
 	}
-	if p := c.outbox("0"); len(p.Ops) != 0 {
+	if p := c.outbox(page.Cursor); len(p.Ops) != 0 {
 		t.Errorf("ops before time is up: %+v", p)
 	}
 
-	clk.Advance(80*time.Second + settle)
+	clk.Advance(78*time.Second + settle)
 	if m := c.note(); m != "notifications/resources/updated" {
 		t.Errorf("notification %q", m)
 	}
-	page := c.outbox("0")
+	page = c.outbox(page.Cursor)
 	aliceKm, bobKm := geo.Km(geo.Point{Lat: -37.6, Lon: 143.9}, ballarat), geo.Km(geo.Point{Lat: -33.87, Lon: 151.21}, ballarat)
 	results := "📍 [**Ballarat, Victoria, Australia**](https://www.openstreetmap.org/?mlat=-37.56220&mlon=143.85030#map=12/-37.56220/143.85030)\n" +
 		"🥇 {u_alice} " + geo.Distance(aliceKm) + " · " + geo.Thousands(geo.Points(aliceKm)) + "\n" +
 		"🥈 {u_bob} " + geo.Distance(bobKm) + " · " + geo.Thousands(geo.Points(bobKm)) + "\n" +
 		"Photo: [alice, Mapillary, CC BY-SA 4.0](https://www.mapillary.com/app/?pKey=1)"
-	if len(page.Ops) != 2 || page.More {
+	if len(page.Ops) != 3 || page.More {
 		t.Fatalf("page %+v", page)
 	}
+	if !isAlarm(page.Ops[0], chat, photo.ID) {
+		t.Errorf("the ⏰ %+v, want one on %s", page.Ops[0], photo.ID)
+	}
+	page.Ops = page.Ops[1:]
 	if o := page.Ops[0]; o.Op != "post" || o.Chat != chat || o.Text != results {
 		t.Errorf("post %+v\nwant %q", o, results)
 	}
@@ -567,8 +635,8 @@ func TestRound(t *testing.T) {
 // from before the round, doesn't count.
 func TestEditAndLateGuess(t *testing.T) {
 	clk, c, _ := start(t)
-	c.geo("1m", from(clk, chat, alice))
-	clk.Advance(10 * time.Second)
+	_, photo, cursor := c.begin(clk, "1m", from(clk, chat, alice))
+	clk.Advance(10*time.Second - introPause)
 	first := from(clk, chat, alice)
 	if !reacted(c.guess("-33.87, 151.21", first)) {
 		t.Fatal("Alice's first guess")
@@ -590,7 +658,11 @@ func TestEditAndLateGuess(t *testing.T) {
 	}
 	clk.Advance(settle)
 	c.note()
-	ops := c.outbox("0").Ops
+	ops := c.outbox(cursor).Ops
+	if len(ops) != 3 || !isAlarm(ops[0], chat, photo.ID) {
+		t.Fatalf("ops %+v", ops)
+	}
+	ops = ops[1:]
 	km := geo.Km(geo.Point{Lat: -37.57, Lon: 143.86}, ballarat)
 	if len(ops) != 2 || !strings.Contains(ops[0].Text, "\n🥇 {u_alice} "+geo.Distance(km)+" ·") || strings.Contains(ops[0].Text, "u_bob") || strings.Contains(ops[0].Text, "🥈") {
 		t.Errorf("results %+v", ops)
@@ -604,7 +676,7 @@ func TestEndAndSkip(t *testing.T) {
 	if got := words(c.geo("end", from(clk, chat, alice))); got != noRound {
 		t.Errorf("end with no round: %q", got)
 	}
-	c.geo("", from(clk, chat, alice))
+	_, _, cursor := c.begin(clk, "", from(clk, chat, alice))
 	if got := words(c.geo("end", from(clk, chat, bob))); got != "Only the player who started this round can end it." {
 		t.Errorf("Bob ends: %q", got)
 	}
@@ -617,7 +689,7 @@ func TestEndAndSkip(t *testing.T) {
 		t.Errorf("skip: %q", skipped)
 	}
 	c.note()
-	page := c.outbox("0")
+	page := c.outbox(cursor)
 	if len(page.Ops) != 1 || page.Ops[0].Op != "unwatch" {
 		t.Errorf("after a skip: %+v", page)
 	}
@@ -625,7 +697,7 @@ func TestEndAndSkip(t *testing.T) {
 		t.Errorf("a skip scored: %q", got)
 	}
 
-	c.geo("5m", from(clk, chat, alice))
+	_, _, cursor = c.begin(clk, "5m", from(clk, chat, alice))
 	clk.Advance(time.Minute)
 	c.guess("-37.6, 143.9", from(clk, chat, bob))
 	ended := words(c.geo("end", from(clk, chat, alice)))
@@ -633,7 +705,7 @@ func TestEndAndSkip(t *testing.T) {
 		t.Errorf("end: %q", ended)
 	}
 	c.note()
-	page = c.outbox(page.Cursor)
+	page = c.outbox(cursor)
 	if len(page.Ops) != 1 || page.Ops[0].Op != "unwatch" {
 		t.Errorf("after an end: %+v", page)
 	}
@@ -650,18 +722,19 @@ func TestEndAndSkip(t *testing.T) {
 // gets everything it still holds; one it gave lets go of what was read.
 func TestUnknownCursor(t *testing.T) {
 	clk, c, _ := start(t)
-	c.geo("30s", from(clk, chat, alice))
-	clk.Advance(30*time.Second + settle)
+	c.begin(clk, "1m", from(clk, chat, alice))
+	clk.Advance(time.Minute - introPause + settle)
 	c.note()
 	nonce, _, _ := strings.Cut(c.outbox("0").Cursor, ".") // this run's
+	// Round 1's photo, its ⏰, the results and the unwatch.
 	for _, cursor := range []string{"0", "k7f2.18", "garbage", nonce + ".99", nonce + ".-1"} {
-		if p := c.outbox(cursor); len(p.Ops) != 2 {
+		if p := c.outbox(cursor); len(p.Ops) != 4 {
 			t.Errorf("cursor %q: %+v", cursor, p)
 		}
 	}
-	p := c.outbox(nonce + ".1") // read the post, not the unwatch
+	p := c.outbox(nonce + ".3") // read the posts, not the unwatch
 	if len(p.Ops) != 1 || p.Ops[0].Op != "unwatch" {
-		t.Errorf("after the post: %+v", p)
+		t.Errorf("after the posts: %+v", p)
 	}
 	p = c.outbox(p.Cursor)
 	if len(p.Ops) != 0 {
@@ -681,7 +754,11 @@ func TestRestart(t *testing.T) {
 	c := connect(t, testServer(t, dir, clk, &fakeFinder{}, &logs))
 	c.geo("1m", from(clk, chat, alice))
 	c.geo("1m", from(clk, "c_two", bob))
-	clk.Advance(10 * time.Second)
+	clk.Advance(introPause) // both round 1s' photos
+	if p := c.outbox("0"); len(p.Ops) != 2 || p.Ops[0].Chat != chat || p.Ops[1].Chat != "c_two" || len(p.Ops[0].Images) != 1 || len(p.Ops[1].Images) != 1 {
+		t.Fatalf("round 1s %+v", p)
+	}
+	clk.Advance(10*time.Second - introPause)
 	c.guess("-37.6, 143.9", from(clk, chat, alice))
 	c.guess("-37.6, 143.9", from(clk, "c_two", alice))
 	c.close()
@@ -689,7 +766,7 @@ func TestRestart(t *testing.T) {
 	// Back before c_one's deadline, with a new clock: the old timers are gone.
 	clk = &fakeClock{now: clk.Now().Add(20 * time.Second)}
 	c = connect(t, testServer(t, dir, clk, &fakeFinder{}, &logs))
-	c.result("resources/subscribe", uriParams{outboxURI}, new(struct{}))
+	c.subscribe()
 	if got := words(c.geo("", from(clk, chat, bob))); got != "A round is on: 30s left." {
 		t.Errorf("after a restart: %q", got)
 	}
@@ -700,21 +777,24 @@ func TestRestart(t *testing.T) {
 	clk = &fakeClock{now: clk.Now().Add(time.Hour - 2*time.Minute)}
 	s := testServer(t, dir, clk, &fakeFinder{}, &logs)
 	c = connect(t, s)
-	c.result("resources/subscribe", uriParams{outboxURI}, new(struct{}))
+	c.subscribe()
 	c.note()
 	page := c.outbox("old.4")
-	if len(page.Ops) != 4 {
+	if len(page.Ops) != 6 { // the round 1s' photos, unread, then each round's results and unwatch
 		t.Fatalf("ops %+v", page)
 	}
 	ids := map[string]bool{}
 	for _, o := range page.Ops {
 		ids[o.ID] = true
-		if o.Op == "post" && o.Chat == chat && (!strings.Contains(o.Text, "🥇 {u_alice}") || !strings.Contains(o.Text, "🥈 {u_bob}")) {
+		if o.Op == "post" && o.Chat == chat && len(o.Images) == 0 && (!strings.Contains(o.Text, "🥇 {u_alice}") || !strings.Contains(o.Text, "🥈 {u_bob}")) {
 			t.Errorf("results %q", o.Text)
 		}
 	}
-	if len(ids) != 4 {
+	if len(ids) != 6 {
 		t.Errorf("op IDs %v", ids)
+	}
+	if a := alarms(page.Ops); len(a) != 0 {
+		t.Errorf("a ⏰ for a round revealed at a restart: %+v", a)
 	}
 	c.close()
 
@@ -722,7 +802,7 @@ func TestRestart(t *testing.T) {
 	// tell those it already applied.
 	c = connect(t, testServer(t, dir, clk, &fakeFinder{}, &logs))
 	again := c.outbox("0")
-	if len(again.Ops) != 4 {
+	if len(again.Ops) != 6 {
 		t.Fatalf("after another restart: %+v", again)
 	}
 	for _, o := range again.Ops {
@@ -730,13 +810,18 @@ func TestRestart(t *testing.T) {
 			t.Errorf("op %s changed its ID", o.ID)
 		}
 	}
-	if got := words(c.geo("", from(clk, chat, bob))); !strings.HasPrefix(got, "🌍") {
-		t.Errorf("a new round: %q", got)
-	}
-	// Ops unread for an hour are let go; only the new round's are left.
-	clk.Advance(keepOps + time.Second)
-	if p := c.outbox("0"); len(p.Ops) != 2 || ids[p.Ops[0].ID] || ids[p.Ops[1].ID] {
+	_, photo, _ := c.begin(clk, "", from(clk, chat, bob))
+	// Ops unread for an hour are let go; only the new round's are left:
+	// its photo, its ⏰, its results and its unwatch.
+	clk.Advance(keepOps - introPause + time.Second)
+	p := c.outbox("0")
+	if len(p.Ops) != 4 || p.Ops[0].ID != photo.ID || !isAlarm(p.Ops[1], chat, photo.ID) {
 		t.Errorf("an hour on: %+v", p)
+	}
+	for _, o := range p.Ops {
+		if ids[o.ID] {
+			t.Errorf("an old op is still held: %+v", o)
+		}
 	}
 }
 
@@ -780,9 +865,9 @@ func TestNoPhotoAndRegions(t *testing.T) {
 	}
 
 	clk, c, _ = start(t)
-	r := c.geo("Europe 2m", from(clk, chat, alice))
-	if !strings.Contains(words(r), "(2 min)") {
-		t.Errorf("caption %q", words(r))
+	r, photo, _ := c.begin(clk, "Europe 2m", from(clk, chat, alice))
+	if !strings.Contains(words(r), " of 2 min:") || !strings.Contains(photo.Text, "before 14:02 (") {
+		t.Errorf("intro %q, caption %q", words(r), photo.Text)
 	}
 	if got := words(c.geo("end", from(clk, chat, alice))); !strings.Contains(got, "Paris") {
 		t.Errorf("a round in Europe: %q", got)
@@ -792,9 +877,7 @@ func TestNoPhotoAndRegions(t *testing.T) {
 			t.Errorf("/geo %s started a round", args)
 		}
 	}
-	if got := words(c.geo("", from(clk, chat, alice))); !strings.HasPrefix(got, "🌍") {
-		t.Errorf("a round anywhere: %q", got)
-	}
+	c.begin(clk, "", from(clk, chat, alice)) // a round anywhere
 	if got := words(c.geo("end", from(clk, chat, alice))); !strings.Contains(got, "Ballarat") {
 		t.Errorf("a world round: %q", got)
 	}
@@ -904,10 +987,7 @@ func TestKeep(t *testing.T) {
 	if got := words(c.geo("stop", from(clk, chat, alice))); got != noRound {
 		t.Errorf("end with no round: %q", got)
 	}
-	r := c.geo("AU 2m", from(clk, chat, alice))
-	if r.Meta == nil {
-		t.Fatalf("/geo AU: %q", words(r))
-	}
+	c.begin(clk, "AU 2m", from(clk, chat, alice))
 	s.mu.Lock()
 	if got := s.rounds[chat].Credit.Link; got != ready {
 		t.Errorf("/geo AU used %s, not the photo kept ready", got)
@@ -1047,9 +1127,7 @@ func TestKeepPlainTake(t *testing.T) {
 		s.add(p, region)
 	}
 	c := connect(t, s)
-	if r := c.geo("", from(clk, chat, alice)); r.Meta == nil {
-		t.Fatalf("/geo: %q", words(r))
-	}
+	c.begin(clk, "", from(clk, chat, alice))
 	s.mu.Lock()
 	place, au := s.rounds[chat].Place, s.count("AU")
 	s.mu.Unlock()
@@ -1153,9 +1231,12 @@ func TestGame(t *testing.T) {
 	clk, c, _ := start(t)
 	c.games(3)
 	began := clk.Now()
-	r := c.geo("1m", from(clk, chat, alice))
-	if !strings.HasPrefix(words(r), "**Round 1 of 3** · 🌍") {
-		t.Errorf("round 1 %q", words(r))
+	r, photo1, cursor := c.begin(clk, "1m", from(clk, chat, alice))
+	if got := words(r); got != "🌍 **GeoGuess** · 3 rounds of 1 min: guess where each photo was taken." {
+		t.Errorf("intro %q", got)
+	}
+	if !strings.HasPrefix(photo1.Text, "**Round 1 of 3** · 🌍") || !strings.Contains(photo1.Text, "(1 min)") {
+		t.Errorf("round 1 %q", photo1.Text)
 	}
 	if w := r.Meta.Watch; w.Until != began.Add(4*(time.Minute+settle)+watchSlack).Format(time.RFC3339) {
 		t.Errorf("watch until %s", w.Until)
@@ -1164,14 +1245,14 @@ func TestGame(t *testing.T) {
 	c.guess(there, from(clk, chat, alice))
 	c.guess(further, from(clk, chat, bob))
 	clk.Advance(30 * time.Second)
-	if p := c.outbox("0"); len(p.Ops) != 0 {
+	if p := c.outbox(cursor); len(p.Ops) != 0 {
 		t.Fatalf("round 1 ended early: %+v", p)
 	}
 	clk.Advance(30*time.Second + settle)
 	waitFor(t, c.s, "round 2", func() bool { r := c.s.rounds[chat]; return r != nil && r.Number == 2 && !r.Waiting })
-	page := c.outbox("0")
-	if len(page.Ops) != 2 || !strings.HasPrefix(page.Ops[0].Text, "**Round 1 of 3** · 📍") ||
-		!strings.HasPrefix(page.Ops[1].Text, "**Round 2 of 3** · 🌍") || len(page.Ops[1].Images) != 1 || page.Ops[1].Images[0].MimeType != "image/jpeg" {
+	page := c.outbox(cursor)
+	if len(page.Ops) != 3 || !isAlarm(page.Ops[0], chat, photo1.ID) || !strings.HasPrefix(page.Ops[1].Text, "**Round 1 of 3** · 📍") ||
+		!strings.HasPrefix(page.Ops[2].Text, "**Round 2 of 3** · 🌍") || len(page.Ops[2].Images) != 1 || page.Ops[2].Images[0].MimeType != "image/jpeg" {
 		t.Fatalf("after round 1 %+v", page)
 	}
 	if p := c.s.rounds[chat].Players; !slices.Equal(p, []string{alice, bob}) {
@@ -1194,7 +1275,9 @@ func TestGame(t *testing.T) {
 		t.Fatalf("after round 2 %+v", page)
 	}
 
-	// Round 3: only Alice guesses, so it runs its time.
+	// Round 3: only Alice guesses, so it runs its time, with a ⏰ on its
+	// photo 5s before the end.
+	photo := page.Ops[1].ID
 	c.guess(there, from(clk, chat, alice))
 	clk.Advance(30 * time.Second)
 	if p := c.outbox(page.Cursor); len(p.Ops) != 0 {
@@ -1203,7 +1286,8 @@ func TestGame(t *testing.T) {
 	clk.Advance(30*time.Second + settle)
 	c.note()
 	page = c.outbox(page.Cursor)
-	if len(page.Ops) != 2 || !strings.Contains(page.Ops[0].Text, "\n\n🏁 **Game over**: 🏆 {u_alice} wins!\n🥇 {u_alice} 3 wins · ") || page.Ops[1].Op != "unwatch" {
+	if len(page.Ops) != 3 || !isAlarm(page.Ops[0], chat, photo) ||
+		!strings.Contains(page.Ops[1].Text, "\n\n🏁 **Game over**: 🏆 {u_alice} wins!\n🥇 {u_alice} 3 wins · ") || page.Ops[2].Op != "unwatch" {
 		t.Fatalf("the end %+v", page)
 	}
 	if c.s.rounds[chat] != nil {
@@ -1216,7 +1300,7 @@ func TestGame(t *testing.T) {
 func TestGameSkipAndEnd(t *testing.T) {
 	clk, c, _ := start(t)
 	c.games(3)
-	c.geo("1m", from(clk, chat, alice))
+	c.begin(clk, "1m", from(clk, chat, alice))
 	c.guess("-37.6, 143.9", from(clk, chat, bob))
 	if got := words(c.geo("skip", from(clk, chat, alice))); !strings.HasPrefix(got, "**Round 1 of 3** · Round skipped.") {
 		t.Errorf("skip %q", got)
@@ -1248,7 +1332,7 @@ func TestGameTieBreaker(t *testing.T) {
 		t.Helper()
 		waitFor(t, c.s, fmt.Sprint("round ", n), func() bool { r := c.s.rounds[chat]; return r != nil && r.Number == n && !r.Waiting })
 	}
-	c.geo("1m", from(clk, chat, alice))
+	_, photo1, _ := c.begin(clk, "1m", from(clk, chat, alice))
 	waitFor(t, c.s, "the spare", func() bool { return len(c.s.rounds[chat].Photos) == 3 })
 	c.guess(near, from(clk, chat, alice)) // Alice wins round 1
 	c.guess(far, from(clk, chat, bob))
@@ -1264,8 +1348,19 @@ func TestGameTieBreaker(t *testing.T) {
 	if last := page.Ops[len(page.Ops)-2].Text; !strings.Contains(last, "\n\n🤝 {u_alice}, {u_bob} are tied on 1 win: a tie-breaker round decides it") {
 		t.Errorf("round 3's results %q", last)
 	}
-	if photo := page.Ops[len(page.Ops)-1]; !strings.HasPrefix(photo.Text, "**Tie-breaker** · 🌍") || len(photo.Images) != 1 {
+	photo := page.Ops[len(page.Ops)-1]
+	if !strings.HasPrefix(photo.Text, "**Tie-breaker** · 🌍") || len(photo.Images) != 1 {
 		t.Errorf("the tie-breaker %+v", photo)
+	}
+	// Rounds 1 and 3, which ran their time, had their ⏰; the tie-breaker
+	// has its own.
+	if a := alarms(page.Ops); len(a) != 2 || !isAlarm(a[0], chat, photo1.ID) || !isAlarm(a[1], chat, page.Ops[len(page.Ops)-4].ID) || !strings.HasPrefix(page.Ops[len(page.Ops)-4].Text, "**Round 3 of 3** · 🌍") {
+		t.Errorf("rounds 1 and 3's ⏰ %+v", a)
+	}
+	clk.Advance(time.Minute - warnLeft)
+	page = c.outbox(page.Cursor)
+	if len(page.Ops) != 1 || !isAlarm(page.Ops[0], chat, photo.ID) {
+		t.Errorf("the tie-breaker's ⏰ %+v", page)
 	}
 	c.guess(near, from(clk, chat, "u_carol")) // nearest, but not tied
 	c.guess(far, from(clk, chat, alice))
@@ -1289,20 +1384,25 @@ func TestGameGap(t *testing.T) {
 	c := connect(t, testServer(t, t.TempDir(), clk, &fakeFinder{}, &logs, "gap", "on"))
 	c.result("initialize", map[string]any{"protocolVersion": protocolVersion, "capabilities": map[string]any{}}, new(initializeResult))
 	c.send(`{"jsonrpc":"2.0","method":"notifications/initialized"}`)
-	c.result("resources/subscribe", uriParams{outboxURI}, new(struct{}))
+	c.subscribe()
 	c.games(3)
 	began := clk.Now()
-	r := c.geo("1m", from(clk, chat, alice))
+	r, photo1, cursor := c.begin(clk, "1m", from(clk, chat, alice)) // round 1's photo introPause after /geo, not the gap
 	if w := r.Meta.Watch; w.Until != began.Add(4*(time.Minute+settle+gapTime)+watchSlack).Format(time.RFC3339) {
 		t.Errorf("watch until %s", w.Until)
 	}
+	c.s.mu.Lock()
+	if left := c.s.rounds[chat].Deadline.Sub(clk.Now()); left != time.Minute {
+		t.Errorf("round 1 has %s", left)
+	}
+	c.s.mu.Unlock()
 	clk.Advance(time.Minute + settle)
 	c.note()
 	waitFor(t, c.s, "the photo taken", func() bool { return len(c.s.timers) == 0 || c.s.rounds[chat].Waiting })
 	time.Sleep(50 * time.Millisecond) // for the photo to be taken and held for the pause
-	page := c.outbox("0")
-	if len(page.Ops) != 1 || !strings.HasPrefix(page.Ops[0].Text, "**Round 1 of 3** · ") {
-		t.Fatalf("the results alone %+v", page)
+	page := c.outbox(cursor)
+	if len(page.Ops) != 2 || !isAlarm(page.Ops[0], chat, photo1.ID) || !strings.HasPrefix(page.Ops[1].Text, "**Round 1 of 3** · ") {
+		t.Fatalf("round 1's ⏰ and results alone %+v", page)
 	}
 	if g := c.guess("-37.6, 143.9", from(clk, chat, bob)); reacted(g) {
 		t.Errorf("a guess in the pause: %+v", g)
@@ -1323,7 +1423,8 @@ func TestGameGap(t *testing.T) {
 // In a group, with a bot that passes reactions, /geo answers with a lobby;
 // round 1's photo comes 30s after the last join once there are 2, as a
 // post with its image; the joined are the players; fewer than 2 after 5
-// minutes calls it off; a DM starts at once with the photo.
+// minutes calls it off; a DM starts at once, its photo a moment after
+// the intro.
 func TestGeoLobby(t *testing.T) {
 	clk := &fakeClock{now: time.Date(2026, 11, 20, 14, 0, 0, 0, time.UTC)}
 	logs := &syncBuffer{}
@@ -1333,7 +1434,7 @@ func TestGeoLobby(t *testing.T) {
 		"capabilities": map[string]any{"experimental": map[string]any{vendor + "addon": map[string]any{"version": 1, "watchReactions": true}}},
 	}, new(initializeResult))
 	c.send(`{"jsonrpc":"2.0","method":"notifications/initialized"}`)
-	c.result("resources/subscribe", uriParams{outboxURI}, new(struct{}))
+	c.subscribe()
 	c.games(3)
 	react := func(removed bool, ctx callContext) {
 		t.Helper()
@@ -1380,8 +1481,8 @@ func TestGeoLobby(t *testing.T) {
 	waitFor(t, c.s, "the call-off", func() bool { return c.s.rounds["c_two"] == nil })
 	dm := from(clk, "c_dm", alice)
 	dm.Group = false
-	if r := c.geo("1m", dm); len(r.Content) != 2 || r.Content[0].Type != "image" {
-		t.Errorf("a DM has a lobby: %+v", words(r))
+	if r, _, _ := c.begin(clk, "1m", dm); r.Meta.Watch.Reactions { // a DM starts at once, without a lobby
+		t.Errorf("a DM has a lobby: %+v", r)
 	}
 }
 
@@ -1390,10 +1491,8 @@ func TestGeoLobby(t *testing.T) {
 func TestDMEndsEarly(t *testing.T) {
 	clk, c, _ := start(t)
 	c.games(3)
-	dm := from(clk, "c_dm", alice)
-	dm.Group = false
-	c.geo("1m", dm)
-	c.guess("-37.6, 143.9", dm)
+	c.begin(clk, "1m", dmFrom(clk, "c_dm", alice))
+	c.guess("-37.6, 143.9", dmFrom(clk, "c_dm", alice))
 	clk.Advance(settle)
 	waitFor(t, c.s, "round 2", func() bool { r := c.s.rounds["c_dm"]; return r != nil && r.Number == 2 })
 }
@@ -1475,7 +1574,7 @@ func fetchClient(t *testing.T, dir string, clk *fakeClock, photos finder, of int
 		"capabilities":    map[string]any{"experimental": map[string]any{vendor + "addon": map[string]any{"version": 1, "watchReactions": lobby}}},
 	}, new(initializeResult))
 	c.send(`{"jsonrpc":"2.0","method":"notifications/initialized"}`)
-	c.result("resources/subscribe", uriParams{outboxURI}, new(struct{}))
+	c.subscribe()
 	return c
 }
 
@@ -1531,9 +1630,8 @@ func TestReserveFull(t *testing.T) {
 	armed = true
 	photos.mu.Unlock()
 	c := connect(t, s)
-	r := c.geo("1m", dmFrom(clk, "c_dm", alice))
-	if !strings.HasPrefix(words(r), "**Round 1 of 3** · 🌍") || len(r.Content) != 2 {
-		t.Fatalf("/geo %q", words(r))
+	if _, photo, _ := c.begin(clk, "1m", dmFrom(clk, "c_dm", alice)); !strings.HasPrefix(photo.Text, "**Round 1 of 3** · 🌍") {
+		t.Fatalf("round 1 %q", photo.Text)
 	}
 	s.mu.Lock()
 	left, stock := s.reserved("c_dm"), len(s.stock)
@@ -1783,9 +1881,7 @@ func TestStockKept(t *testing.T) {
 	s.perGame = 3
 	stockUp(s, photos, "", need(3)+s.cfg.Buffer)
 	c := connect(t, s)
-	if r := c.geo("1m", dmFrom(clk, "c_dm", alice)); len(r.Content) != 2 {
-		t.Fatalf("/geo %q", words(r))
-	}
+	c.begin(clk, "1m", dmFrom(clk, "c_dm", alice))
 	if files := photoFiles(t, dir); len(files) != 3+s.cfg.Buffer {
 		t.Errorf("%d files, with round 1's shown", len(files))
 	}
@@ -1877,9 +1973,7 @@ func TestAutoKeep(t *testing.T) {
 	s.perGame = 3
 	stockUp(s, photos, "europe", need(3))
 	c := connect(t, s)
-	if r := c.geo("europe 1m", dmFrom(clk, "c_dm", alice)); len(r.Content) != 2 {
-		t.Fatalf("/geo europe %q", words(r))
-	}
+	c.begin(clk, "europe 1m", dmFrom(clk, "c_dm", alice))
 	s.mu.Lock()
 	recent := slices.Clone(s.recent)
 	s.mu.Unlock()
@@ -2107,9 +2201,7 @@ func TestRestockGatherer(t *testing.T) {
 	clk := &fakeClock{now: time.Date(2026, 11, 20, 14, 0, 0, 0, time.UTC)}
 	c := fetchClient(t, t.TempDir(), clk, &fakeFinder{off: true}, 3, false)
 	stockUp(c.s, &fakeFinder{}, "europe", need(3))
-	if r := c.geo("europe 1m", dmFrom(clk, "c_b", alice)); len(r.Content) != 2 {
-		t.Fatalf("/geo europe %q", words(r))
-	}
+	c.begin(clk, "europe 1m", dmFrom(clk, "c_b", alice))
 	if got := words(c.geo("europe 1m", dmFrom(clk, "c_a", bob))); got != "🔎 Fetching spots for 3 rounds…" {
 		t.Fatalf("/geo europe %q", got)
 	}
@@ -2166,5 +2258,182 @@ func TestStartingSaved(t *testing.T) {
 	}
 	if files := photoFiles(t, dir); len(files) != need(3) {
 		t.Errorf("%d files", len(files))
+	}
+}
+
+// alarms is the ⏰ reactions among ops.
+func alarms(ops []outboxOp) []outboxOp {
+	var out []outboxOp
+	for _, o := range ops {
+		if o.Op == "react" {
+			out = append(out, o)
+		}
+	}
+	return out
+}
+
+// Each round's photo, round 1's too, is a post the game made, and gets a
+// ⏰ 5s before its deadline. A round that ends early, as round 3 does
+// once both players guess, gets none.
+func TestAlarm(t *testing.T) {
+	clk, c, _ := start(t)
+	c.games(3)
+	_, photo1, cursor := c.begin(clk, "1m", from(clk, chat, alice))
+	c.guess("-37.6, 143.9", from(clk, chat, alice)) // the game's players
+	c.guess("-37.6, 143.95", from(clk, chat, bob))
+	clk.Advance(time.Minute - warnLeft - time.Second)
+	if p := c.outbox(cursor); len(p.Ops) != 0 {
+		t.Fatalf("a ⏰ 6s before round 1's end: %+v", p)
+	}
+	clk.Advance(time.Second)
+	page := c.outbox(cursor)
+	if len(page.Ops) != 1 || !isAlarm(page.Ops[0], chat, photo1.ID) {
+		t.Fatalf("round 1's ⏰ %+v, want one on %s", page, photo1.ID)
+	}
+	clk.Advance(warnLeft + settle)
+	opened(t, c.s, chat, 2)
+	page = c.outbox(page.Cursor)
+	if len(page.Ops) != 2 || page.Ops[1].Op != "post" || !strings.HasPrefix(page.Ops[1].Text, "**Round 2 of 3**") {
+		t.Fatalf("round 2 %+v", page)
+	}
+	photo := page.Ops[1].ID
+	clk.Advance(time.Minute - warnLeft - time.Second)
+	if p := c.outbox(page.Cursor); len(p.Ops) != 0 {
+		t.Fatalf("a ⏰ 6s before the end: %+v", p)
+	}
+	clk.Advance(time.Second)
+	page = c.outbox(page.Cursor)
+	if len(page.Ops) != 1 || !isAlarm(page.Ops[0], chat, photo) {
+		t.Fatalf("the ⏰ %+v, want one on %s", page, photo)
+	}
+	clk.Advance(warnLeft + settle)
+	opened(t, c.s, chat, 3)
+	page = c.outbox(page.Cursor)
+	if len(page.Ops) != 2 || page.Ops[1].ID == photo || page.Ops[1].ID == photo1.ID {
+		t.Fatalf("round 3 %+v", page)
+	}
+	c.guess("-37.6, 143.9", from(clk, chat, alice))
+	c.guess("-37.6, 143.95", from(clk, chat, bob))
+	c.s.mu.Lock()
+	left := len(c.s.warns)
+	c.s.mu.Unlock()
+	if left != 0 {
+		t.Errorf("the ⏰ of a round that ended early is still armed")
+	}
+	clk.Advance(settle)
+	c.note()
+	waitFor(t, c.s, "the end", func() bool { return c.s.rounds[chat] == nil && len(c.s.warns) == 0 })
+	clk.Advance(time.Minute)
+	if a := alarms(c.outbox(page.Cursor).Ops); len(a) != 0 {
+		t.Errorf("a ⏰ on a round that ended early: %+v", a)
+	}
+}
+
+// In a DM with its photos ready, round 1's photo, posted a moment after
+// /geo's answer, gets its ⏰ as a later round's does; a round the player
+// ends by guessing gets none.
+func TestAlarmDM(t *testing.T) {
+	clk, c, _ := start(t)
+	c.games(3)
+	_, photo1, cursor := c.begin(clk, "1m", dmFrom(clk, "c_dm", alice))
+	clk.Advance(time.Minute - warnLeft - time.Second)
+	if p := c.outbox(cursor); len(p.Ops) != 0 {
+		t.Fatalf("a ⏰ 6s before round 1's end: %+v", p)
+	}
+	clk.Advance(time.Second)
+	c.note()
+	page := c.outbox(cursor)
+	if len(page.Ops) != 1 || !isAlarm(page.Ops[0], "c_dm", photo1.ID) {
+		t.Fatalf("round 1's ⏰ %+v, want one on %s", page, photo1.ID)
+	}
+	c.guess("-37.6, 143.9", dmFrom(clk, "c_dm", alice)) // the one player: round 1 ends
+	clk.Advance(settle)
+	opened(t, c.s, "c_dm", 2)
+	page = c.outbox(page.Cursor)
+	if len(page.Ops) != 2 || !strings.HasPrefix(page.Ops[0].Text, "**Round 1 of 3** · 📍") || !strings.HasPrefix(page.Ops[1].Text, "**Round 2 of 3** · 🌍") {
+		t.Fatalf("round 2 %+v", page)
+	}
+	c.guess("-37.6, 143.9", dmFrom(clk, "c_dm", alice)) // round 2 ends early
+	clk.Advance(settle)
+	opened(t, c.s, "c_dm", 3)
+	clk.Advance(time.Minute - warnLeft - settle - time.Second) // round 2's ⏰ would have been due
+	if a := alarms(c.outbox(page.Cursor).Ops); len(a) != 0 {
+		t.Errorf("a ⏰ on a round that ended early: %+v", a)
+	}
+}
+
+// /geo end stops the open round's ⏰, as does /geo skip; a round with 5s
+// or less to go after a restart, or shorter than warnMin, gets none.
+func TestAlarmEnd(t *testing.T) {
+	clk, c, _ := start(t)
+	c.games(3)
+	c.begin(clk, "1m", from(clk, chat, alice))
+	c.geo("skip", from(clk, chat, alice))
+	opened(t, c.s, chat, 2)
+	clk.Advance(30 * time.Second)
+	c.geo("end", from(clk, chat, alice))
+	clk.Advance(time.Minute)
+	if a := alarms(c.outbox("0").Ops); len(a) != 0 {
+		t.Errorf("a ⏰ after /geo end: %+v", a)
+	}
+	c.s.mu.Lock()
+	if len(c.s.warns) != 0 {
+		t.Errorf("⏰ timers left: %v", c.s.warns)
+	}
+	// A short round, as no command makes: nothing useful to warn.
+	r := &round{ID: "rshort", Chat: "c_two", Number: 2, Of: 3, Started: clk.Now(), Deadline: clk.Now().Add(warnMin - time.Second), Post: "x.1", Guesses: map[string]guess{}}
+	c.s.rounds["c_two"] = r
+	c.s.armWarn(r)
+	n := len(c.s.warns)
+	delete(c.s.rounds, "c_two")
+	c.s.mu.Unlock()
+	if n != 0 {
+		t.Errorf("a ⏰ for a %s round", warnMin-time.Second)
+	}
+	clk.Advance(warnMin)
+	if a := alarms(c.outbox("0").Ops); len(a) != 0 {
+		t.Errorf("a ⏰ on a short round: %+v", a)
+	}
+}
+
+// After a restart with more than 5s left, the open round's ⏰ is armed
+// again, for the photo posted before it; with 5s or less, there is none.
+func TestAlarmRestart(t *testing.T) {
+	for _, after := range []time.Duration{20 * time.Second, time.Minute - warnLeft} {
+		clk := &fakeClock{now: time.Date(2026, 11, 20, 14, 0, 0, 0, time.UTC)}
+		dir := t.TempDir()
+		c := connect(t, testServer(t, dir, clk, &fakeFinder{}, io.Discard))
+		c.games(3)
+		c.begin(clk, "1m", from(clk, chat, alice))
+		c.geo("skip", from(clk, chat, alice))
+		opened(t, c.s, chat, 2)
+		c.s.mu.Lock()
+		photo := c.s.rounds[chat].Post
+		c.s.mu.Unlock()
+		if photo == "" {
+			t.Fatal("round 2's photo has no op ID")
+		}
+		c.close()
+
+		clk = &fakeClock{now: clk.Now().Add(after)}
+		s := testServer(t, dir, clk, &fakeFinder{}, io.Discard)
+		s.perGame = 3
+		c = connect(t, s)
+		c.subscribe()
+		if left := time.Minute - warnLeft - after; left > 0 {
+			clk.Advance(left - time.Second)
+			if a := alarms(c.outbox("0").Ops); len(a) != 0 {
+				t.Fatalf("%s on: a ⏰ too soon: %+v", after, a)
+			}
+		}
+		clk.Advance(time.Second)
+		a := alarms(c.outbox("0").Ops)
+		switch {
+		case after < time.Minute-warnLeft && (len(a) != 1 || !isAlarm(a[0], chat, photo)):
+			t.Errorf("%s on: the ⏰ %+v, want one on %s", after, a, photo)
+		case after >= time.Minute-warnLeft && len(a) != 0:
+			t.Errorf("%s on: a ⏰ with 5s left at the restart: %+v", after, a)
+		}
+		c.close()
 	}
 }

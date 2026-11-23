@@ -31,6 +31,14 @@ const (
 // pin is the reaction to a recorded guess.
 const pin = "📍"
 
+// alarm is the bot's reaction to a round's photo with warnLeft to go; a
+// round shorter than warnMin has none, nothing useful to warn.
+const (
+	alarm    = "⏰"
+	warnLeft = 5 * time.Second
+	warnMin  = 10 * time.Second
+)
+
 // replyTime is what /geo leaves before the bot's deadline to start the
 // round and send the photo, so it never starts one the bot won't show.
 const replyTime = 3 * time.Second
@@ -41,6 +49,9 @@ const replyTime = 3 * time.Second
 const (
 	startGrace = 3 * time.Second
 	fetchMax   = 5 * time.Minute
+	// introPause is how long after /geo's answer round 1's photo follows,
+	// when its photos are ready, so the answer goes out first.
+	introPause = 2 * time.Second
 )
 
 // fetching is /geo's answer in a DM, or a group without a lobby, while the
@@ -246,31 +257,20 @@ func (s *server) start(ctx context.Context, c *addon.Context, length time.Durati
 	if !c.Group { // a DM: its one player, so no round waits for the timer
 		r.Players = []string{c.Sender}
 	}
+	text := intro(r)
 	if len(r.Photos) < of { // round 1 follows once the photos are in
 		r.Closed = now // the gap lets the answer go out before round 1
 		s.armGiveUp(r)
-		meta, have := watchMeta(r, false), len(r.Photos)
-		s.mu.Unlock()
-		s.save()
-		s.log.Printf("game %s fetching its photos, %d of %d ready", r.ID, have, need(of))
-		return addon.Result{Content: addon.Text(fetching(of)).Content, Meta: meta}
+		text = fetching(of)
+	} else { // round 1 follows as a post, a moment after the answer
+		r.Closed = now.Add(introPause - s.cfg.gap)
+		s.startReadyLocked(r)
 	}
-	photo := s.popLocked(r)
-	r.Number, r.Waiting, r.Started, r.Deadline = 1, false, now, now.Add(length)
-	r.Answer, r.Place = photo.At, photo.Place.Name
-	r.Credit = credit{Creator: photo.Creator, Source: photo.Source, Licence: photo.Licence, Link: photo.Link}
-	s.arm(r)
-	text, meta := roundLine(r)+caption(r.Deadline, length, s.srv.Network(), r.Number == 1), watchMeta(r, false)
+	meta, have := watchMeta(r, false), len(r.Photos)
 	s.mu.Unlock()
 	s.save()
-	s.log.Printf("round %s started: %s, a %s photo", r.ID, length, photo.Source)
-	return addon.Result{
-		Content: []addon.Content{
-			{Type: "image", Data: base64.StdEncoding.EncodeToString(photo.JPEG), MimeType: "image/jpeg"},
-			{Type: "text", Text: text},
-		},
-		Meta: meta,
-	}
+	s.log.Printf("game %s starting, %d of %d photos ready", r.ID, have, need(of))
+	return addon.Result{Content: addon.Text(text).Content, Meta: meta}
 }
 
 // gather waits up to wait, or until ctx ends, for r's game to have a photo
@@ -364,10 +364,45 @@ func lengthLabel(d time.Duration) string {
 }
 
 // arm sets r's timer to reveal its open round once its time is up,
-// replacing any timer it had. s.mu is held.
+// replacing any timer it had, and its ⏰. s.mu is held.
 func (s *server) arm(r *round) {
 	chat, id, number := r.Chat, r.ID, r.Number
 	s.setTimer(chat, r.Deadline.Add(settle).Sub(s.clock.Now()), func() { s.timeUp(chat, id, number) })
+	s.armWarn(r)
+}
+
+// armWarn sets r's ⏰, replacing any it had: a reaction to its open
+// round's photo with warnLeft to go. There is none for a photo the game
+// didn't post itself (round 1's as /geo's answer, which has no op ID), a
+// round shorter than warnMin, or one with warnLeft or less to go, as one
+// that ended early has. s.mu is held.
+func (s *server) armWarn(r *round) {
+	s.stopWarn(r.Chat)
+	d := r.Deadline.Add(-warnLeft).Sub(s.clock.Now())
+	if r.Post == "" || r.Waiting || r.Deadline.Sub(r.Started) < warnMin || d <= 0 {
+		return
+	}
+	chat, id, number, post, deadline := r.Chat, r.ID, r.Number, r.Post, r.Deadline
+	s.warns[chat] = s.clock.AfterFunc(d, func() {
+		s.mu.Lock()
+		r := s.rounds[chat]
+		if r == nil || r.ID != id || r.Number != number || r.Waiting || r.Post != post || !r.Deadline.Equal(deadline) { // over, or ended early
+			s.mu.Unlock()
+			return
+		}
+		delete(s.warns, chat)
+		s.queue(addon.Op{Op: "react", Chat: chat, Post: post, Emoji: alarm})
+		s.mu.Unlock()
+		s.save()
+	})
+}
+
+// stopWarn stops the ⏰ of chat's game, if it has one. s.mu is held.
+func (s *server) stopWarn(chat string) {
+	if t := s.warns[chat]; t != nil {
+		t.Stop()
+		delete(s.warns, chat)
+	}
 }
 
 // setTimer sets chat's game's one timer to call f after d, replacing any
@@ -431,6 +466,7 @@ func (s *server) endGame(r *round) {
 		t.Stop()
 		delete(s.timers, r.Chat)
 	}
+	s.stopWarn(r.Chat)
 	s.restockLocked(r)
 	s.queue(addon.Op{Op: "unwatch", Chat: r.Chat, Watch: r.ID})
 }
@@ -540,9 +576,9 @@ func (s *server) openLocked(r *round, number int) {
 	r.Started, r.Deadline = now, now.Add(length)
 	r.Answer, r.Place, r.Guesses = photo.At, photo.Place.Name, map[string]guess{}
 	r.Credit = credit{Creator: photo.Creator, Source: photo.Source, Licence: photo.Licence, Link: photo.Link}
-	s.arm(r)
-	s.queue(addon.Op{Op: "post", Chat: chat, Text: roundLine(r) + caption(r.Deadline, length, s.srv.Network(), r.Number == 1),
+	r.Post = s.queueID(addon.Op{Op: "post", Chat: chat, Text: roundLine(r) + caption(r.Deadline, length, s.srv.Network(), r.Number == 1),
 		Images: []addon.Image{{Data: base64.StdEncoding.EncodeToString(photo.JPEG), MimeType: "image/jpeg", Name: "geoguess.jpg"}}})
+	s.arm(r)
 	s.log.Printf("round %d of game %s started: %s, a %s photo", number, r.ID, length, photo.Source)
 }
 
@@ -671,6 +707,7 @@ func (s *server) closeRound(r *round, scored bool) string {
 		t.Stop()
 		delete(s.timers, r.Chat)
 	}
+	s.stopWarn(r.Chat)
 	if r.Number <= 1 && len(r.Players) == 0 { // no lobby: round 1's guessers are the game's players
 		r.Players = slices.Sorted(maps.Keys(r.Guesses))
 	}
@@ -814,9 +851,13 @@ func (s *server) guess(c *addon.Context, msg string) addon.Result {
 
 // lobbyIntro is /geo's answer in a group: the game, and how to join.
 func lobbyIntro(r *round) string {
-	return fmt.Sprintf("🌍 **GeoGuess** · %d rounds of %s: guess where each photo was taken.\n"+
-		"👋 **React to this message with any emoji to join**, whoever started it too: the game starts 30 seconds after the last player joins, once at least 2 have; a round ends as soon as everyone who joined has guessed.",
-		r.of(), lengthLabel(r.Length))
+	return intro(r) + "\n" +
+		"👋 **React to this message with any emoji to join**, whoever started it too: the game starts 30 seconds after the last player joins, once at least 2 have; a round ends as soon as everyone who joined has guessed."
+}
+
+// intro is the game's first line: its rounds and their length.
+func intro(r *round) string {
+	return fmt.Sprintf("🌍 **GeoGuess** · %d %s of %s: guess where each photo was taken.", r.of(), plural(r.of(), "round", "rounds"), lengthLabel(r.Length))
 }
 
 // reacted is a reaction to the game's messages: in the lobby, a player

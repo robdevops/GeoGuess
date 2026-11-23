@@ -21,8 +21,9 @@ the place and ranks players by how far off they were. A game is 3 rounds.
   least 2 have joined. It is called off after 15 minutes without 2.
 - **Telegram:** the bot sees reactions only as the group's admin. With
   privacy mode on (the default), reply to the round's photo to guess.
-- **DMs:** there is no lobby. The game starts at once, and a round ends
-  as soon as you guess.
+- **DMs:** there is no lobby. The game starts at once: `/geo` says how
+  many rounds of what length, and round 1's photo follows 2 seconds
+  later. A round ends as soon as you guess.
 - **Photos not ready:** the game starts once each round has its photo
   ("🔎 Fetching spots for 3 rounds…"); after 5 minutes it plays the
   rounds it found, or is called off with none.
@@ -31,13 +32,14 @@ the place and ranks players by how far off they were. A game is 3 rounds.
 - **Points:** the nearest guess wins a round. Most round wins takes the
   game, with points shown alongside. A tie gets a tie-breaker round.
 - **Early end:** a round ends once all players have guessed.
+- **⏰ with 5 seconds left** on each round's photo.
 - **No repeats:** none of the last 1,000 photos comes round again soon.
 - **After:** for an hour, a reply to the game's messages that asks the
   bot gets "That game is over. Start another with /geo."
 
 ## Quick start
 
-You need signalbot main at `d685491` or newer, and Go 1.27 or newer.
+You need signalbot at `c755fc7` or newer, and Go 1.27 or newer.
 
 1. **Build it:**
 
@@ -61,7 +63,8 @@ You need signalbot main at `d685491` or newer, and Go 1.27 or newer.
 
 3. **Add it to the MCP servers file** (`MCP_CONFIG`). It must be called
    `geo`. `chats: ["all"]` plays in every group; list group IDs to limit
-   it, and add `"dms": true` to play in DMs too.
+   it, and add `"dms": true` to play in DMs too. `react` is for the 📍
+   on a counted guess and the ⏰ with 5 seconds left.
 
    ```jsonc
    "geo": {

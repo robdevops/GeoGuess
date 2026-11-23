@@ -37,6 +37,7 @@ type server struct {
 	perGame int
 	rounds  map[string]*round  // by chat
 	timers  map[string]stopper // each game's, by chat
+	warns   map[string]stopper // each open round's ⏰, by chat
 	used    []string           // the last maxUsed photos' keys, oldest first
 	scores  map[string][]score // by chat, the last scoreDays days
 	stock   []kept             // photos ready for a game, oldest first
@@ -66,6 +67,9 @@ type round struct {
 	Place    string           `json:"place"`
 	Credit   credit           `json:"credit"`
 	Guesses  map[string]guess `json:"guesses"` // by player
+	// Post is the op ID of the open round's photo, which the ⏰ reacts to:
+	// "" for a photo that was /geo's answer, which has none.
+	Post string `json:"post,omitempty"`
 
 	Number   int            `json:"number,omitempty"`   // the open round, from 1
 	Of       int            `json:"of,omitempty"`       // the game's rounds; 0, a round saved before games, is 1
@@ -162,6 +166,7 @@ func newServer(cfg config, clk clock, photos finder, logger *log.Logger) (*serve
 		perGame: gameRounds,
 		rounds:  map[string]*round{},
 		timers:  map[string]stopper{},
+		warns:   map[string]stopper{},
 		scores:  map[string][]score{},
 		retries: map[string]retry{},
 		changed: make(chan struct{}),
@@ -290,4 +295,15 @@ func (s *server) queue(ops ...addon.Op) {
 	if err := s.srv.Queue(ops...); err != nil {
 		s.log.Printf("an op was refused: %v", err)
 	}
+}
+
+// queueID adds op to the outbox and returns its ID, for a later op to
+// name it, or "" if the outbox refused it.
+func (s *server) queueID(op addon.Op) string {
+	ids, err := s.srv.QueueIDs(op)
+	if err != nil || len(ids) != 1 {
+		s.log.Printf("an op was refused: %v", err)
+		return ""
+	}
+	return ids[0]
 }

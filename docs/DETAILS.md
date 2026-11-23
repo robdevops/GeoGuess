@@ -24,7 +24,10 @@ react too. It starts 30 seconds after the last player joins, once there
 are at least 2 of you, and is called off if fewer than 2 have joined after
 15 minutes. On Telegram the bot sees reactions only as the group's admin,
 so without that nobody can join. In a DM there's no lobby: the game
-starts at once, and a round ends as soon as you guess.
+starts at once, `/geo` answering with the game's rounds and their length
+("🌍 **GeoGuess** · 3 rounds of 3 min: guess where each photo was
+taken.") and round 1's photo following 2 seconds later, and a round ends
+as soon as you guess.
 
 For an hour after a game ends, however it ended, a reply to one of its
 messages (in a DM, one of its photos) that asks the bot gets "That game is
@@ -157,8 +160,14 @@ what gives it the `GEO_` settings.
 
 `chats` takes the groups' IDs as Signal or Telegram shows them, or
 `["all"]`; add `"dms": true` to play in DMs too. GeoGuess needs `post`
-(for the results), `react` (the 📍 on a counted guess) and `watch` (to
-read guesses and the lobby's reactions).
+(for the results), `react` (the 📍 on a counted guess, and the ⏰ on a
+round's photo with 5 seconds left) and `watch` (to read guesses and the
+lobby's reactions).
+
+The ⏰ is one more reaction a round, against the bot's per-chat rate for
+the addon's ops (by default 20 a minute, with a burst of 5): a round is
+at least 30 seconds, so a game's ops (a photo, a ⏰, the results) stay
+well within it.
 
 ### Timeouts
 
@@ -273,9 +282,11 @@ their cancellation, and the outbox the bot reads. GeoGuess adds:
 - Starting a game answers with one watch for `geo_guess` for the whole
   game, until 5s past its latest end, with `guard` "No hints during a
   round 😉" and `over` "That game is over. Start another with /geo.". In a
-  DM the answer is round 1's photo and its caption, or, with photos
-  missing, the "Fetching" text, and round 1's photo follows as a `post`
-  with the image. In a group, if the bot says it takes `watchReactions`,
+  DM, or a group without a lobby, the answer is the game's intro ("🌍
+  **GeoGuess** · 3 rounds of 3 min: …"), or, with photos missing, the
+  "Fetching" text; round 1's photo always follows as a `post` with the
+  image: 2s after the answer with the photos ready, else once they are
+  in. In a group, if the bot says it takes `watchReactions`,
   it is the lobby's intro and the watch has `reactions`; round 1's photo
   follows as a `post` when the lobby starts the game (after a "Still
   fetching" `post` if photos are missing). A recorded guess answers with
@@ -283,7 +294,14 @@ their cancellation, and the outbox the bot reads. GeoGuess adds:
 - When a round ends GeoGuess queues a `post` with the results, its players
   as `{u_…}` placeholders, then the next round's photo, one the game
   reserved, as a `post` with the image; after the last round, the totals
-  and an `unwatch`. `/geo end` (or `stop`) and
+  and an `unwatch`. With 5s left in a round, GeoGuess queues a `react`
+  with `post` set to the op ID of the round's photo `post`, `chat` to its
+  chat and `emoji` ⏰, so the bot reacts to its own message. A round that
+  ended early, was skipped or ended, or is shorter than 10s gets none.
+  Every round's photo, round 1's too, is a `post`, so each has an op ID
+  for its ⏰. The photo's op ID is saved with the round, so the
+  ⏰ is armed again after a restart with more than 5s left.
+  `/geo end` (or `stop`) and
   `/geo skip` answer with the results themselves. Ops the bot hasn't read
   are saved in `geo.json`, with their IDs, so they survive a restart.
 - On start, games still open get their timers back (a lobby's too, and
