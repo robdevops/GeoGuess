@@ -68,7 +68,7 @@ type round struct {
 	Credit   credit           `json:"credit"`
 	Guesses  map[string]guess `json:"guesses"` // by player
 	// Post is the op ID of the open round's photo, which the ⏰ reacts to:
-	// "" for a photo that was /geo's answer, which has none.
+	// "" if the outbox refused the post.
 	Post string `json:"post,omitempty"`
 
 	Number   int            `json:"number,omitempty"`   // the open round, from 1

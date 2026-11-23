@@ -360,9 +360,8 @@ func (c *client) subscribe() {
 // begin is /geo args from ctx in a game whose photos are ready, with no
 // lobby: /geo answers with the game's intro, and round 1's photo follows
 // introPause later as a post, not before, which begin moves the clock on
-// to. It
-// returns /geo's result, round 1's post, the last op in the outbox, and
-// the outbox's cursor past it.
+// to. It returns /geo's result, round 1's post (the last op in the
+// outbox), and the outbox's cursor past it.
 func (c *client) begin(clk *fakeClock, args string, ctx callContext) (toolResult, outboxOp, string) {
 	c.t.Helper()
 	r := c.geo(args, ctx)
@@ -528,7 +527,7 @@ func TestRound(t *testing.T) {
 	}
 	w := *r.Meta.Watch
 	if w.ID == "" || w.Pattern != geo.Pattern || w.Tool != "geo_guess" || w.Guard != guard ||
-		w.Until != began.Add(90*time.Second+settle+watchSlack).Format(time.RFC3339) {
+		w.Until != began.Add(introPause+90*time.Second+settle+watchSlack).Format(time.RFC3339) {
 		t.Errorf("watch %+v", w)
 	}
 	if got := words(c.geo("", from(clk, chat, bob))); got != "A game is on: round 1's photo is on its way." {
@@ -552,13 +551,12 @@ func TestRound(t *testing.T) {
 	if data, _ := base64.StdEncoding.DecodeString(photo.Images[0].Data); !bytes.HasPrefix(data, []byte("jpeg ")) {
 		t.Errorf("image %q", data)
 	}
-	// The tests have no gap before a round, so round 1 keeps the deadline
-	// /geo gave it and the pause comes off its time.
-	if want := caption(began.Add(90*time.Second), 90*time.Second-introPause, "", true); photo.Text != want {
+	// Round 1 opens introPause after /geo, with its full time.
+	if want := caption(began.Add(introPause+90*time.Second), 90*time.Second, "", true); photo.Text != want {
 		t.Errorf("caption %q\nwant %q", photo.Text, want)
 	}
 
-	if got := words(c.geo("", from(clk, chat, bob))); got != "A round is on: 1m28s left." {
+	if got := words(c.geo("", from(clk, chat, bob))); got != "A round is on: 1m30s left." {
 		t.Errorf("a second /geo: %q", got)
 	}
 	clk.Advance(10 * time.Second)
@@ -578,7 +576,7 @@ func TestRound(t *testing.T) {
 		t.Errorf("ops before time is up: %+v", p)
 	}
 
-	clk.Advance(78*time.Second + settle)
+	clk.Advance(80*time.Second + settle)
 	if m := c.note(); m != "notifications/resources/updated" {
 		t.Errorf("notification %q", m)
 	}
@@ -636,7 +634,7 @@ func TestRound(t *testing.T) {
 func TestEditAndLateGuess(t *testing.T) {
 	clk, c, _ := start(t)
 	_, photo, cursor := c.begin(clk, "1m", from(clk, chat, alice))
-	clk.Advance(10*time.Second - introPause)
+	clk.Advance(10 * time.Second)
 	first := from(clk, chat, alice)
 	if !reacted(c.guess("-33.87, 151.21", first)) {
 		t.Fatal("Alice's first guess")
@@ -723,7 +721,7 @@ func TestEndAndSkip(t *testing.T) {
 func TestUnknownCursor(t *testing.T) {
 	clk, c, _ := start(t)
 	c.begin(clk, "1m", from(clk, chat, alice))
-	clk.Advance(time.Minute - introPause + settle)
+	clk.Advance(time.Minute + settle)
 	c.note()
 	nonce, _, _ := strings.Cut(c.outbox("0").Cursor, ".") // this run's
 	// Round 1's photo, its ⏰, the results and the unwatch.
@@ -758,7 +756,7 @@ func TestRestart(t *testing.T) {
 	if p := c.outbox("0"); len(p.Ops) != 2 || p.Ops[0].Chat != chat || p.Ops[1].Chat != "c_two" || len(p.Ops[0].Images) != 1 || len(p.Ops[1].Images) != 1 {
 		t.Fatalf("round 1s %+v", p)
 	}
-	clk.Advance(10*time.Second - introPause)
+	clk.Advance(10 * time.Second)
 	c.guess("-37.6, 143.9", from(clk, chat, alice))
 	c.guess("-37.6, 143.9", from(clk, "c_two", alice))
 	c.close()
@@ -1238,7 +1236,7 @@ func TestGame(t *testing.T) {
 	if !strings.HasPrefix(photo1.Text, "**Round 1 of 3** · 🌍") || !strings.Contains(photo1.Text, "(1 min)") {
 		t.Errorf("round 1 %q", photo1.Text)
 	}
-	if w := r.Meta.Watch; w.Until != began.Add(4*(time.Minute+settle)+watchSlack).Format(time.RFC3339) {
+	if w := r.Meta.Watch; w.Until != began.Add(introPause+4*(time.Minute+settle)+watchSlack).Format(time.RFC3339) {
 		t.Errorf("watch until %s", w.Until)
 	}
 	there, further := "-37.6, 143.9", "-37.6, 143.95" // Alice is always nearest
@@ -1388,7 +1386,7 @@ func TestGameGap(t *testing.T) {
 	c.games(3)
 	began := clk.Now()
 	r, photo1, cursor := c.begin(clk, "1m", from(clk, chat, alice)) // round 1's photo introPause after /geo, not the gap
-	if w := r.Meta.Watch; w.Until != began.Add(4*(time.Minute+settle+gapTime)+watchSlack).Format(time.RFC3339) {
+	if w := r.Meta.Watch; w.Until != began.Add(introPause+4*(time.Minute+settle+gapTime)+watchSlack).Format(time.RFC3339) {
 		t.Errorf("watch until %s", w.Until)
 	}
 	c.s.mu.Lock()

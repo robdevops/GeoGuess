@@ -192,11 +192,11 @@ func busy(r *round, now time.Time) addon.Result {
 // start begins a game in c's chat, reserving a photo from the stock for
 // each of its rounds and a spare for a tie-breaker. In a group with a
 // lobby, it answers at once with the lobby's intro. Else, with a photo for
-// each round in hand, or within startGrace, it answers with round 1's
-// photo, its caption and the watch for guesses, or that it is fetching
-// the photos. A game short of photos gathers them as the prefetcher finds
-// them, for up to fetchMax, and round 1 follows once there is one for
-// each round.
+// each round in hand, or within startGrace, it answers with the game's
+// intro and the watch for guesses, and round 1's photo follows as a post
+// introPause later; else it answers that it is fetching the photos, which
+// the game gathers as the prefetcher finds them, for up to fetchMax, and
+// round 1 follows once there is one for each round.
 func (s *server) start(ctx context.Context, c *addon.Context, length time.Duration, region string) addon.Result {
 	s.mu.Lock()
 	now := s.clock.Now()
@@ -243,6 +243,8 @@ func (s *server) start(ctx context.Context, c *addon.Context, length time.Durati
 	r.Until = now.Add(gameTime(of, length, s.cfg.gap))
 	if !lobby && len(r.Photos) < of { // round 1 waits for its photos
 		r.Until = r.Until.Add(fetchMax)
+	} else if !lobby { // round 1 follows introPause after the answer
+		r.Until = r.Until.Add(introPause)
 	}
 	if lobby { // players join by reacting to the intro first; photos are gathered meanwhile, until GiveUp, within lobbyMax
 		r.Lobby, r.Waiting, r.Joined, r.CallOff = true, false, nil, now.Add(lobbyMax)
@@ -372,9 +374,8 @@ func (s *server) arm(r *round) {
 }
 
 // armWarn sets r's ⏰, replacing any it had: a reaction to its open
-// round's photo with warnLeft to go. There is none for a photo the game
-// didn't post itself (round 1's as /geo's answer, which has no op ID), a
-// round shorter than warnMin, or one with warnLeft or less to go, as one
+// round's photo with warnLeft to go. There is none for a photo without
+// an op ID (a post the outbox refused), a round shorter than warnMin, or one with warnLeft or less to go, as one
 // that ended early has. s.mu is held.
 func (s *server) armWarn(r *round) {
 	s.stopWarn(r.Chat)
