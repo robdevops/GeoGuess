@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -30,17 +31,19 @@ type server struct {
 	perGame int
 
 	mu      sync.Mutex
-	rounds  map[string]*round  // by chat
-	timers  map[string]stopper // each round's, by chat
-	used    []string           // the last maxUsed photos' keys, oldest first
-	scores  map[string][]score // by chat, the last scoreDays days
-	buffer  []geo.Photo        // photos ready for a round, oldest first
-	wants   map[string]bool    // regions a /geo asked for that the buffer lacks
-	retries map[string]retry   // GEO_KEEP regions whose last search failed
-	changed chan struct{}      // closed when the buffer gains a photo
+	rounds  map[string]*round             // by chat
+	timers  map[string]stopper            // each round's, by chat
+	used    []string                      // the last maxUsed photos' keys, oldest first
+	scores  map[string][]score            // by chat, the last scoreDays days
+	buffer  []geo.Photo                   // photos ready for a round, oldest first
+	wants   map[string]bool               // regions a /geo asked for that the buffer lacks
+	retries map[string]retry              // GEO_KEEP regions whose last search failed
+	changed chan struct{}                 // closed when the buffer gains a photo
+	fetches map[string]context.CancelFunc // by game, stops the wait for round 1's photo
 	seeds   map[string]*geo.Seeds
 
-	saveMu sync.Mutex // one save at a time, so the last one written is the newest
+	saveMu sync.Mutex     // one save at a time, so the last one written is the newest
+	next   sync.WaitGroup // nextRound's goroutines, which tests wait for
 }
 
 // round is one chat's game, at its open round. Its guesses are distances
@@ -65,7 +68,8 @@ type round struct {
 	Totals   map[string]int `json:"totals,omitempty"`   // the game's points so far, by player
 	Wins     map[string]int `json:"wins,omitempty"`     // rounds won so far, by player
 	Tie      []string       `json:"tie,omitempty"`      // in a tie-breaker round, the players tied for the win
-	Waiting  bool           `json:"waiting,omitempty"`  // between rounds, for the next photo
+	Waiting  bool           `json:"waiting,omitempty"`  // between rounds, for the next photo; before round 1 (Number 0), for its photo
+	Fetch    time.Time      `json:"fetch,omitempty"`    // when the game began waiting for round 1's photo: it gives up fetchMax after
 	Closed   time.Time      `json:"closed,omitempty"`   // when the last round ended: the next photo waits gapTime after it
 	Lobby    bool           `json:"lobby,omitempty"`    // waiting for players to join by reacting to the intro
 	Joined   []string       `json:"joined,omitempty"`   // who has joined
@@ -118,16 +122,16 @@ const (
 	// late guess still stays out of the chat's history.
 	watchSlack = 5 * time.Second
 	// gameRounds is the rounds in a game, and maxGame the longest a game
-	// may run, with its waits for photos: within the bot's default
-	// watch_max of 1h.
+	// may run, with its waits for photos: with lobbyMax and fetchMax,
+	// within the bot's default watch_max of 1h.
 	gameRounds = 3
 	// gapTime is the pause between a round's results and the next photo,
 	// so players can read the results.
 	gapTime = 5 * time.Second
-	maxGame = 50 * time.Minute
+	maxGame = 45 * time.Minute
 	// The lobby: how long after the last join the game starts, the players
 	// it needs, and how long it waits for them, within the watch's hour
-	// with maxGame.
+	// with fetchMax and maxGame.
 	lobbyWait  = 30 * time.Second
 	minPlayers = 2
 	lobbyMax   = 5 * time.Minute
@@ -147,6 +151,7 @@ func newServer(cfg config, clk clock, photos finder, logger *log.Logger) (*serve
 		wants:   map[string]bool{},
 		retries: map[string]retry{},
 		changed: make(chan struct{}),
+		fetches: map[string]context.CancelFunc{},
 		seeds:   map[string]*geo.Seeds{},
 	}
 	s.srv = addon.New(addon.Config{Name: "geoguess", Title: "GeoGuess", Version: "1", Tools: s.tools(), Now: clk.Now, Changed: s.save})
@@ -172,8 +177,11 @@ func newServer(cfg config, clk clock, photos finder, logger *log.Logger) (*serve
 		switch {
 		case r.Lobby:
 			s.armLobby(r)
-		case r.Waiting: // for its next photo
-			go s.nextRound(r.Chat, r.ID, r.Number+1)
+			if r.Region != "" && s.match(r.Region) < 0 { // fetch round 1's photo during the lobby again
+				s.wants[r.Region] = true
+			}
+		case r.Waiting: // for its next photo, or round 1's
+			s.goNext(r.Chat, r.ID, r.Number+1)
 		case !s.clock.Now().Before(r.Deadline.Add(settle)):
 			s.timeUpLocked(r)
 			revealed++

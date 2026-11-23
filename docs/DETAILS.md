@@ -26,6 +26,20 @@ are at least 2 of you, and is called off if fewer than 2 have joined after
 so without that nobody can join. In a DM there's no lobby: the game
 starts at once, and a round ends as soon as you guess.
 
+If no photo is ready (often so for `/geo offroad`, a slow region, or just
+after GeoGuess starts), `/geo` waits about 3 seconds for one, then starts
+the game anyway. In a DM, or a group without a lobby, it answers "🔎
+Fetching a spot… round 1 follows as soon as it's found." ("an off-road
+spot" for `/geo offroad`), and posts round 1's photo once it is found.
+In a lobby the photo is looked for while players join; if it still isn't
+there when the lobby ends, the same "Fetching" message is posted and round
+1 follows. Meanwhile `/geo` says round 1's photo is on its way, a guess is
+told the game hasn't started, and the starter's `/geo end` calls it off.
+With no photo 5 minutes after the fetch began (when `/geo` answered, or
+when the lobby ended), the bot posts "I couldn't find a spot, so the game
+is off." ("an off-road spot" for `/geo offroad`) and the game ends. A restart carries on waiting, to the same
+limit.
+
 For an hour after a game ends, however it ended, a reply to one of its
 messages (in a DM, one of its photos) that asks the bot gets "That game is
 over. Start another with /geo." instead of the model's answer. The bot
@@ -41,7 +55,7 @@ A guess scores 5000·e^(−km/2000) points, rounded, and the full 5000
 within 25 m.
 
 A round's length is 30s to 30m. The game, with a possible tie-breaker,
-lasts at most 50 minutes; `/geo` with rounds too long for that says so.
+lasts at most 45 minutes; `/geo` with rounds too long for that says so.
 A length and regions combine, as in `/geo europe 90s`.
 
 `/geo offroad` plays a game whose every round's photo was taken off
@@ -125,13 +139,11 @@ read guesses and the lobby's reactions).
 ### Timeouts
 
 A game's watch lasts at most 55 minutes and 5 seconds (a lobby's 5
-minutes, then at most 50 for the game), so the default `watch_max` of 1h
-is enough. The `timeout` lets `/geo` wait for a photo when none is ready:
-keep it above `GEO_WAIT` (50s by default). GeoGuess never waits past the
-bot's timeout anyway, less a few seconds to send the photo, and starts no
-round the bot has given up on. A call that waits holds one of the bot's 2
-calls at once for GeoGuess, so while two chats each wait for a photo,
-`/geo end`, `/geo skip` and `/geo scores` are told GeoGuess is busy.
+minutes, up to 5 fetching round 1's photo, then at most 45 for the game),
+so the default `watch_max` of 1h is enough. `/geo` waits at most about 3
+seconds for a photo before it answers, so any `timeout` above 5 seconds
+will do. GeoGuess never waits past the bot's timeout anyway, less a few
+seconds to send the answer, and starts no game the bot has given up on.
 
 ### State directory and memory
 
@@ -164,7 +176,7 @@ through the bot's proxy, and trusts its CA), and nothing else.
 | `GEO_MAX_AGE_YEARS` | `10` | Ignore older photos; more than 0, up to 100 |
 | `GEO_BUFFER` | `3` | Checked photos kept ready (1 to 20) |
 | `GEO_KEEP` | empty | Regions to always keep a photo ready for, comma-separated, in `GEO_REGIONS`'s names, one photo each: `AU,NZ` keeps one Australian and one New Zealand photo, so `/geo AU` answers at once. `offroad` keeps one off-road photo ready for `/geo offroad`, and `offroad AU` one off roads in Australia, for `/geo offroad AU` (commas separate kept regions, so `offroad,AU` keeps two photos: one off roads anywhere and one in Australia). Searched before topping up `GEO_BUFFER` (a region whose search fails is tried again after a backoff, and the buffer fills meanwhile), never dropped to make room or used by a `/geo` another photo can serve, and refilled once used |
-| `GEO_WAIT` | `50s` | How long `/geo` waits for a photo when none is ready, 5s to 110s, before saying to try again; the search carries on either way. Keep the `geo` chat command's `timeout` above it |
+| `GEO_WAIT` | `50s` | How long a game waits for a later round's photo when none is ready, 5s to 110s, before ending the game there. It doesn't delay `/geo`'s answer: with no photo ready, round 1 is fetched for up to 5 minutes |
 | `GEO_NOMINATIM_URL` | `https://nominatim.openstreetmap.org` | Reverse geocoder for the place names; `https://` only, as it is sent each round's answer |
 | `GEO_PANORAMAX_URL` | `https://api.panoramax.xyz` | Panoramax API (a STAC catalogue), such as one instance's; `https://` only |
 | `GEO_MAPILLARY_URL` | `https://graph.mapillary.com` | Mapillary Graph API; `https://` only |
@@ -230,16 +242,19 @@ their cancellation, and the outbox the bot reads. GeoGuess adds:
 - Starting a game answers with one watch for `geo_guess` for the whole
   game, until 5s past its latest end, with `guard` "No hints during a
   round 😉" and `over` "That game is over. Start another with /geo.". In a
-  DM the answer is round 1's photo and its caption. In a group, if the bot
-  says it takes `watchReactions`, it is the lobby's intro and the watch
-  has `reactions`; round 1's photo follows as a `post` when the lobby
-  starts the game. A recorded guess answers with the reaction 📍. `/geo`
-  gives up in time for the bot's `deadline`.
+  DM the answer is round 1's photo and its caption, or, with no photo
+  ready, the "Fetching" text, and round 1's photo follows as a `post`
+  with the image. In a group, if the bot says it takes `watchReactions`,
+  it is the lobby's intro and the watch has `reactions`; round 1's photo
+  follows as a `post` when the lobby starts the game (after a "Fetching"
+  `post` if it isn't ready). A recorded guess answers with the reaction
+  📍. `/geo` gives up in time for the bot's `deadline`.
 - When a round ends GeoGuess queues a `post` with the results, its players
   as `{u_…}` placeholders, then the next round's photo as a `post` with
   the image (from the buffer, waiting up to `GEO_WAIT`); after the last
   round, the totals and an `unwatch`. `/geo end` (or `stop`) and
   `/geo skip` answer with the results themselves. Ops the bot hasn't read
   are saved in `geo.json`, with their IDs, so they survive a restart.
-- On start, games still open get their timers back (a lobby's too), and
-  rounds whose time passed while GeoGuess was down are revealed at once.
+- On start, games still open get their timers back (a lobby's too, and a
+  fetch's limit), and rounds whose time passed while GeoGuess was down
+  are revealed at once.

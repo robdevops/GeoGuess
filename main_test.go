@@ -766,14 +766,17 @@ func TestNoPhotoAndRegions(t *testing.T) {
 	clk := &fakeClock{now: time.Date(2026, 11, 20, 14, 0, 0, 0, time.UTC)}
 	photos := &fakeFinder{off: true}
 	s := testServer(t, t.TempDir(), clk, photos, io.Discard)
-	s.cfg.Wait = 50 * time.Millisecond
+	s.cfg.grace = 50 * time.Millisecond
 	c := connect(t, s)
 	began := time.Now()
-	if got := words(c.geo("", from(clk, chat, alice))); got != noPhoto {
+	if got := words(c.geo("", from(clk, chat, alice))); got != fetching("") {
 		t.Errorf("no photo: %q", got)
 	}
-	if waited := time.Since(began); waited < s.cfg.Wait {
-		t.Errorf("gave up after %s, before GEO_WAIT", waited)
+	if waited := time.Since(began); waited < s.cfg.grace {
+		t.Errorf("fetching after %s, before the grace", waited)
+	}
+	if got := words(c.geo("end", from(clk, chat, alice))); got != "The game is off." {
+		t.Errorf("end: %q", got)
 	}
 
 	clk, c, _ = start(t)
@@ -1068,8 +1071,11 @@ func TestGeoAbandoned(t *testing.T) {
 	cc = from(clk, "c_two", bob)
 	cc.Deadline = time.Now().Add(replyTime).Unix()
 	began = time.Now()
-	if got := words(c.geo("Europe", cc)); got != noPhoto || time.Since(began) > time.Second {
+	if got := words(c.geo("Europe", cc)); got != fetching("Europe") || time.Since(began) > time.Second {
 		t.Errorf("near the deadline: %q after %s", got, time.Since(began))
+	}
+	if got := words(c.geo("end", cc)); got != "The game is off." {
+		t.Errorf("end: %q", got)
 	}
 }
 
@@ -1583,21 +1589,407 @@ func TestSearchSeeds(t *testing.T) {
 	}
 }
 
-// A /geo offroad with no off-road photo in time says they take longer;
-// GEO_KEEP takes spaces only with offroad.
+// A /geo offroad with no off-road photo in time says it is fetching one,
+// and another /geo meanwhile that the photo is on its way; GEO_KEEP takes
+// spaces only with offroad.
 func TestOffroadNoPhoto(t *testing.T) {
 	clk := &fakeClock{now: time.Date(2026, 11, 20, 14, 0, 0, 0, time.UTC)}
 	s := testServer(t, t.TempDir(), clk, &fakeFinder{off: true}, io.Discard)
-	s.cfg.Wait = 50 * time.Millisecond
+	s.cfg.grace = 50 * time.Millisecond
 	c := connect(t, s)
-	if got := words(c.geo("offroad", from(clk, chat, alice))); got != noOffroad {
+	if got := words(c.geo("offroad", from(clk, chat, alice))); got != "🔎 Fetching an off-road spot… round 1 follows as soon as it's found." {
 		t.Errorf("/geo offroad: %q", got)
 	}
-	if got := words(c.geo("", from(clk, chat, bob))); got != noPhoto {
+	if got := words(c.geo("", from(clk, chat, bob))); got != "A game is on: round 1's photo is on its way." {
 		t.Errorf("/geo: %q", got)
 	}
+	if got := words(c.geo("", from(clk, "c_two", bob))); got != "🔎 Fetching a spot… round 1 follows as soon as it's found." {
+		t.Errorf("/geo elsewhere: %q", got)
+	}
+	for _, g := range []struct{ chat, user string }{{chat, alice}, {"c_two", bob}} {
+		if got := words(c.geo("end", from(clk, g.chat, g.user))); got != "The game is off." {
+			t.Errorf("/geo end in %s: %q", g.chat, got)
+		}
+	}
+	waitNext(t, c.s)
 	env := map[string]string{"GEO_STATE_DIR": "/x", "GEO_KEEP": "AU NZ"}
 	if _, err := loadConfig(func(k string) string { return env[k] }); err == nil || !strings.Contains(err.Error(), "GEO_KEEP") {
 		t.Errorf("GEO_KEEP AU NZ: %v", err)
 	}
+}
+
+// gated is the fake finder, finding nothing until open is closed.
+type gated struct {
+	*fakeFinder
+	open chan struct{}
+}
+
+func (f gated) Find(ctx context.Context, regions string) (geo.Photo, error) {
+	select {
+	case <-f.open:
+	case <-ctx.Done():
+		return geo.Photo{}, ctx.Err()
+	}
+	return f.fakeFinder.Find(ctx, regions)
+}
+
+// fetchClient is a client of a server keeping its state in dir, on clk,
+// with photos and a short grace, initialized and subscribed; with lobby,
+// the bot takes reactions.
+func fetchClient(t *testing.T, dir string, clk *fakeClock, photos finder, lobby bool) *client {
+	t.Helper()
+	s := testServer(t, dir, clk, photos, io.Discard)
+	s.cfg.grace = 50 * time.Millisecond
+	c := connect(t, s)
+	c.result("initialize", map[string]any{
+		"protocolVersion": protocolVersion,
+		"capabilities":    map[string]any{"experimental": map[string]any{vendor + "addon": map[string]any{"version": 1, "watchReactions": lobby}}},
+	}, new(initializeResult))
+	c.send(`{"jsonrpc":"2.0","method":"notifications/initialized"}`)
+	c.result("resources/subscribe", uriParams{outboxURI}, new(struct{}))
+	return c
+}
+
+// waitNext fails the test unless s's nextRound goroutines have all
+// returned within a few seconds, so none is still saving.
+func waitNext(t *testing.T, s *server) {
+	t.Helper()
+	done := make(chan struct{})
+	go func() {
+		s.next.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("nextRound is still running")
+	}
+}
+
+// forget drops the games of s, closed as by a restart, from its memory
+// only, stopping their fetches, so no nextRound outlives the test; its
+// saved state stays as it was.
+func forget(t *testing.T, s *server) {
+	t.Helper()
+	s.mu.Lock()
+	clear(s.rounds)
+	for _, cancel := range s.fetches {
+		cancel()
+	}
+	s.mu.Unlock()
+	waitNext(t, s)
+}
+
+// dmFrom is the context of a DM sent now by user in chat.
+func dmFrom(clk clock, chat, user string) callContext {
+	cc := from(clk, chat, user)
+	cc.Group = false
+	return cc
+}
+
+// In a DM with no photo ready, /geo answers at once that it is fetching
+// one, with the game's watch; a guess or /geo meanwhile is told the game
+// hasn't started; round 1 is posted, with its image, once the photo is
+// found.
+func TestFetchDM(t *testing.T) {
+	clk := &fakeClock{now: time.Date(2026, 11, 20, 14, 0, 0, 0, time.UTC)}
+	photos := gated{&fakeFinder{}, make(chan struct{})}
+	c := fetchClient(t, t.TempDir(), clk, photos, false)
+	began := clk.Now()
+	r := c.geo("1m", dmFrom(clk, "c_dm", alice))
+	if words(r) != "🔎 Fetching a spot… round 1 follows as soon as it's found." || len(r.Content) != 1 || r.Meta == nil || r.Meta.Watch == nil ||
+		r.Meta.Watch.Reactions || r.Meta.Watch.Until != began.Add(time.Minute+settle+fetchMax+watchSlack).Format(time.RFC3339) {
+		t.Fatalf("/geo %+v", r)
+	}
+	if g := c.guess("-37.6, 143.9", dmFrom(clk, "c_dm", alice)); words(g) != "The game hasn't started yet." || reacted(g) {
+		t.Errorf("a guess before the photo: %q", words(g))
+	}
+	if got := words(c.geo("", dmFrom(clk, "c_dm", alice))); got != "A game is on: round 1's photo is on its way." {
+		t.Errorf("/geo while fetching: %q", got)
+	}
+	if p := c.outbox("0"); len(p.Ops) != 0 {
+		t.Fatalf("ops before the photo: %+v", p)
+	}
+	close(photos.open)
+	waitFor(t, c.s, "round 1", func() bool { r := c.s.rounds["c_dm"]; return r != nil && r.Number == 1 && !r.Waiting })
+	waitNext(t, c.s)
+	page := c.outbox("0")
+	if len(page.Ops) != 1 || page.Ops[0].Op != "post" || !strings.HasPrefix(page.Ops[0].Text, "🌍 **Where is this?**") ||
+		len(page.Ops[0].Images) != 1 || page.Ops[0].Images[0].MimeType != "image/jpeg" {
+		t.Fatalf("round 1 %+v", page)
+	}
+	if g := c.guess("-37.6, 143.9", dmFrom(clk, "c_dm", alice)); !reacted(g) {
+		t.Errorf("a guess in round 1: %q", words(g))
+	}
+	clk.Advance(settle)
+	waitFor(t, c.s, "the end", func() bool { return c.s.rounds["c_dm"] == nil })
+}
+
+// In a lobby with no photo ready, /geo answers with the intro at once and
+// the photo is looked for during the lobby: found by its end, round 1 is
+// posted then, as when a photo was ready; else the chat is told it is
+// being fetched, and round 1 follows once it is found.
+func TestFetchLobby(t *testing.T) {
+	react := func(c *client, ctx callContext) {
+		t.Helper()
+		c.result("tools/call", map[string]any{"name": "geo_guess", "arguments": map[string]any{"reaction": "👍"},
+			"_meta": map[string]any{vendor + "context": ctx}}, new(toolResult))
+	}
+	clk := &fakeClock{now: time.Date(2026, 11, 20, 14, 0, 0, 0, time.UTC)}
+	photos := gated{&fakeFinder{}, make(chan struct{})}
+	c := fetchClient(t, t.TempDir(), clk, photos, true)
+	began := clk.Now()
+	r := c.geo("europe 1m", from(clk, chat, alice))
+	if !strings.Contains(words(r), "React to this message with any emoji to join") || r.Meta == nil || !r.Meta.Watch.Reactions ||
+		r.Meta.Watch.Until != began.Add(time.Minute+settle+lobbyMax+fetchMax+watchSlack).Format(time.RFC3339) {
+		t.Fatalf("lobby %+v", r)
+	}
+	c.s.mu.Lock()
+	wanted := c.s.wants["europe"]
+	c.s.mu.Unlock()
+	if !wanted {
+		t.Error("the lobby's region isn't searched")
+	}
+	close(photos.open)
+	waitFor(t, c.s, "the photo, during the lobby", func() bool { return c.s.count("europe") == 1 })
+	react(c, from(clk, chat, alice))
+	react(c, from(clk, chat, bob))
+	clk.Advance(lobbyWait)
+	waitFor(t, c.s, "round 1", func() bool { r := c.s.rounds[chat]; return r != nil && r.Number == 1 && !r.Waiting })
+	waitNext(t, c.s)
+	page := c.outbox("0")
+	if len(page.Ops) != 1 || !strings.HasPrefix(page.Ops[0].Text, "🌍 **Where is this?**") || len(page.Ops[0].Images) != 1 {
+		t.Fatalf("round 1 %+v", page)
+	}
+	c.s.mu.Lock()
+	if place := c.s.rounds[chat].Place; !strings.Contains(place, "Paris") {
+		t.Errorf("round 1 in %s", place)
+	}
+	c.s.mu.Unlock()
+
+	// Still no photo when the lobby ends.
+	clk = &fakeClock{now: time.Date(2026, 11, 20, 14, 0, 0, 0, time.UTC)}
+	photos = gated{&fakeFinder{}, make(chan struct{})}
+	c = fetchClient(t, t.TempDir(), clk, photos, true)
+	if r := c.geo("offroad 1m", from(clk, chat, alice)); !strings.Contains(words(r), "off-road") || !r.Meta.Watch.Reactions {
+		t.Fatalf("lobby %+v", r)
+	}
+	react(c, from(clk, chat, alice))
+	react(c, from(clk, chat, bob))
+	clk.Advance(lobbyWait)
+	ended := clk.Now()
+	waitFor(t, c.s, "the fetch", func() bool { r := c.s.rounds[chat]; return r != nil && !r.Fetch.IsZero() })
+	page = c.outbox("0")
+	if len(page.Ops) != 1 || page.Ops[0].Text != "🔎 Fetching an off-road spot… round 1 follows as soon as it's found." || len(page.Ops[0].Images) != 0 {
+		t.Fatalf("at the lobby's end %+v", page)
+	}
+	c.s.mu.Lock()
+	r2 := *c.s.rounds[chat]
+	c.s.mu.Unlock()
+	if !r2.Fetch.Equal(ended) || r2.Number != 0 || !r2.Waiting || !slices.Equal(r2.Players, []string{alice, bob}) {
+		t.Errorf("fetching %+v", r2)
+	}
+	if g := c.guess("-37.6, 143.9", from(clk, chat, bob)); words(g) != "The game hasn't started yet." {
+		t.Errorf("a guess before the photo: %q", words(g))
+	}
+	close(photos.open)
+	waitFor(t, c.s, "round 1", func() bool { r := c.s.rounds[chat]; return r != nil && r.Number == 1 && !r.Waiting })
+	waitNext(t, c.s)
+	page = c.outbox(page.Cursor)
+	if len(page.Ops) != 1 || !strings.HasPrefix(page.Ops[0].Text, "🌍 **Where is this?**") || len(page.Ops[0].Images) != 1 {
+		t.Fatalf("round 1 %+v", page)
+	}
+}
+
+// With no photo fetchMax after the fetch began, the game is called off,
+// with a post and the end of its watch.
+func TestFetchGiveUp(t *testing.T) {
+	clk := &fakeClock{now: time.Date(2026, 11, 20, 14, 0, 0, 0, time.UTC)}
+	c := fetchClient(t, t.TempDir(), clk, &fakeFinder{off: true}, false)
+	r := c.geo("offroad 1m", dmFrom(clk, "c_dm", alice))
+	if words(r) != "🔎 Fetching an off-road spot… round 1 follows as soon as it's found." || r.Meta == nil {
+		t.Fatalf("/geo %+v", r)
+	}
+	waitFor(t, c.s, "the fetch", func() bool { return c.s.timers["c_dm"] != nil })
+	clk.Advance(fetchMax - time.Second)
+	if p := c.outbox("0"); len(p.Ops) != 0 {
+		t.Fatalf("gave up early: %+v", p)
+	}
+	clk.Advance(time.Second)
+	page := c.outbox("0")
+	if len(page.Ops) != 2 || page.Ops[0].Text != "I couldn't find an off-road spot, so the game is off." ||
+		page.Ops[1].Op != "unwatch" || page.Ops[1].Watch != r.Meta.Watch.ID {
+		t.Fatalf("the give-up %+v", page)
+	}
+	waitNext(t, c.s)
+	c.s.mu.Lock()
+	left := len(c.s.fetches) != 0
+	c.s.mu.Unlock()
+	if left {
+		t.Error("the fetch goes on")
+	}
+}
+
+// In a group without a lobby, the starter's /geo end calls off a game
+// still fetching round 1's photo; /geo skip only says it is on its way.
+func TestFetchEnd(t *testing.T) {
+	clk := &fakeClock{now: time.Date(2026, 11, 20, 14, 0, 0, 0, time.UTC)}
+	c := fetchClient(t, t.TempDir(), clk, &fakeFinder{off: true}, false)
+	r := c.geo("1m", from(clk, chat, alice))
+	if words(r) != "🔎 Fetching a spot… round 1 follows as soon as it's found." || r.Meta == nil || r.Meta.Watch.Reactions {
+		t.Fatalf("/geo %+v", r)
+	}
+	if g := c.guess("-37.6, 143.9", from(clk, chat, bob)); words(g) != "The game hasn't started yet." {
+		t.Errorf("a guess before the photo: %q", words(g))
+	}
+	for _, tc := range []struct{ args, user, want string }{
+		{"skip", alice, "Round 1's photo is on its way."},
+		{"end", bob, "Only the player who started this round can end it."},
+		{"end", alice, "The game is off."},
+	} {
+		if got := words(c.geo(tc.args, from(clk, chat, tc.user))); got != tc.want {
+			t.Errorf("/geo %s by %s: %q", tc.args, tc.user, got)
+		}
+	}
+	waitNext(t, c.s)
+	c.s.mu.Lock()
+	left := len(c.s.fetches) != 0 || c.s.rounds[chat] != nil
+	c.s.mu.Unlock()
+	if left {
+		t.Error("the game goes on")
+	}
+	if p := c.outbox("0"); len(p.Ops) != 1 || p.Ops[0].Op != "unwatch" || p.Ops[0].Watch != r.Meta.Watch.ID {
+		t.Errorf("ops %+v", p)
+	}
+}
+
+// A game saved while fetching round 1's photo waits for it again after a
+// restart, giving up fetchMax after the fetch first began, or posts round
+// 1 once a photo is found.
+func TestFetchRestart(t *testing.T) {
+	clk := &fakeClock{now: time.Date(2026, 11, 20, 14, 0, 0, 0, time.UTC)}
+	dir := t.TempDir()
+	c := fetchClient(t, dir, clk, &fakeFinder{off: true}, false)
+	c.geo("1m", dmFrom(clk, "c_dm", alice))
+	waitFor(t, c.s, "the fetch", func() bool { return c.s.timers["c_dm"] != nil })
+	c.close()
+	forget(t, c.s)
+
+	clk = &fakeClock{now: clk.Now().Add(2 * time.Minute)}
+	c = fetchClient(t, dir, clk, &fakeFinder{off: true}, false)
+	if got := words(c.geo("", dmFrom(clk, "c_dm", alice))); got != "A game is on: round 1's photo is on its way." {
+		t.Errorf("after a restart: %q", got)
+	}
+	waitFor(t, c.s, "the fetch", func() bool { return c.s.timers["c_dm"] != nil })
+	clk.Advance(fetchMax - 2*time.Minute - time.Second)
+	if p := c.outbox("0"); len(p.Ops) != 0 {
+		t.Fatalf("gave up early: %+v", p)
+	}
+	clk.Advance(time.Second)
+	page := c.outbox("0")
+	if len(page.Ops) != 2 || page.Ops[0].Text != "I couldn't find a spot, so the game is off." || page.Ops[1].Op != "unwatch" {
+		t.Fatalf("the give-up %+v", page)
+	}
+	waitNext(t, c.s)
+	c.close()
+
+	clk = &fakeClock{now: time.Date(2026, 11, 20, 14, 0, 0, 0, time.UTC)}
+	dir = t.TempDir()
+	c = fetchClient(t, dir, clk, &fakeFinder{off: true}, false)
+	c.geo("1m", dmFrom(clk, "c_dm", alice))
+	waitFor(t, c.s, "the fetch", func() bool { return c.s.timers["c_dm"] != nil })
+	c.close()
+	forget(t, c.s)
+	c = fetchClient(t, dir, clk, &fakeFinder{}, false)
+	waitFor(t, c.s, "round 1", func() bool { r := c.s.rounds["c_dm"]; return r != nil && r.Number == 1 && !r.Waiting })
+	waitNext(t, c.s)
+	if page := c.outbox("0"); len(page.Ops) != 1 || !strings.HasPrefix(page.Ops[0].Text, "🌍 **Where is this?**") || len(page.Ops[0].Images) != 1 {
+		t.Fatalf("round 1 after a restart %+v", page)
+	}
+}
+
+// noOffroad is the fake finder, failing at once off roads, counting the
+// tries.
+type noOffroad struct {
+	*fakeFinder
+	tries *int
+}
+
+func (f noOffroad) Find(ctx context.Context, regions string) (geo.Photo, error) {
+	if off, _ := splitOffroad(regions); off {
+		f.mu.Lock()
+		*f.tries++
+		f.mu.Unlock()
+		return geo.Photo{}, geo.ErrNotFound
+	}
+	return f.fakeFinder.Find(ctx, regions)
+}
+
+// A game fetching a GEO_KEEP region's photo leaves failed searches there
+// to the region's backoff, rather than searching again at once.
+func TestFetchKeepBackoff(t *testing.T) {
+	clk := &fakeClock{now: time.Date(2026, 11, 20, 14, 0, 0, 0, time.UTC)}
+	photos := noOffroad{&fakeFinder{}, new(int)}
+	s := testServer(t, t.TempDir(), clk, photos, io.Discard, "GEO_KEEP", "offroad")
+	s.cfg.grace = 50 * time.Millisecond
+	c := connect(t, s)
+	if got := words(c.geo("offroad 1m", dmFrom(clk, "c_dm", alice))); got != "🔎 Fetching an off-road spot… round 1 follows as soon as it's found." {
+		t.Fatalf("/geo offroad: %q", got)
+	}
+	time.Sleep(300 * time.Millisecond)
+	photos.mu.Lock()
+	tries := *photos.tries
+	photos.mu.Unlock()
+	if tries > 5 {
+		t.Errorf("searched off roads %d times without a pause", tries)
+	}
+	if got := words(c.geo("end", dmFrom(clk, "c_dm", alice))); got != "The game is off." {
+		t.Errorf("/geo end: %q", got)
+	}
+	waitNext(t, s)
+}
+
+// A restart during a lobby with no photo for its region asks the
+// prefetcher for one again, so it is still looked for during the lobby.
+func TestFetchLobbyRestart(t *testing.T) {
+	clk := &fakeClock{now: time.Date(2026, 11, 20, 14, 0, 0, 0, time.UTC)}
+	dir := t.TempDir()
+	c := fetchClient(t, dir, clk, &fakeFinder{off: true}, true)
+	if r := c.geo("offroad 1m", from(clk, chat, alice)); r.Meta == nil || !r.Meta.Watch.Reactions {
+		t.Fatalf("/geo offroad: %q", words(r))
+	}
+	c.close()
+	forget(t, c.s)
+	s := testServer(t, dir, clk, &fakeFinder{off: true}, io.Discard)
+	s.mu.Lock()
+	lobby, wanted := s.rounds[chat] != nil && s.rounds[chat].Lobby, s.wants["offroad"]
+	s.mu.Unlock()
+	if !lobby || !wanted {
+		t.Errorf("after a restart: lobby %v, wanted %v", lobby, wanted)
+	}
+}
+
+// Round 1 fetched after /geo answered waits the gap, so the answer goes
+// out before the photo.
+func TestFetchGap(t *testing.T) {
+	clk := &fakeClock{now: time.Date(2026, 11, 20, 14, 0, 0, 0, time.UTC)}
+	photos := gated{&fakeFinder{}, make(chan struct{})}
+	s := testServer(t, t.TempDir(), clk, photos, io.Discard, "gap", "on")
+	s.cfg.grace = 50 * time.Millisecond
+	c := connect(t, s)
+	if got := words(c.geo("1m", dmFrom(clk, "c_dm", alice))); got != "🔎 Fetching a spot… round 1 follows as soon as it's found." {
+		t.Fatalf("/geo: %q", got)
+	}
+	close(photos.open)
+	waitNext(t, s)
+	if p := c.outbox("0"); len(p.Ops) != 0 {
+		t.Fatalf("round 1 without the gap: %+v", p)
+	}
+	clk.Advance(gapTime)
+	waitFor(t, s, "round 1", func() bool { r := s.rounds["c_dm"]; return r != nil && r.Number == 1 && !r.Waiting })
+	if p := c.outbox("0"); len(p.Ops) != 1 || len(p.Ops[0].Images) != 1 {
+		t.Fatalf("round 1 %+v", p)
+	}
+	clk.Advance(time.Minute + settle)
+	waitFor(t, s, "the end", func() bool { return s.rounds["c_dm"] == nil })
 }

@@ -59,8 +59,12 @@ func (s *server) prefetch(ctx context.Context) {
 			continue
 		}
 		s.mu.Lock()
-		delete(s.wants, region) // asked again by the next /geo for it
 		keep := slices.Contains(s.cfg.Keep, region)
+		// A GEO_KEEP region is searched again after its backoff; another is
+		// asked again by the next /geo, or kept while a game waits for it.
+		if keep || !s.awaited(region) {
+			delete(s.wants, region)
+		}
 		var wait time.Duration
 		if keep {
 			r := s.retries[region]
@@ -111,6 +115,17 @@ func (s *server) idle(ctx context.Context, next time.Time) bool {
 		return false
 	}
 	return true
+}
+
+// awaited reports whether a game yet to open round 1 waits for a photo
+// in region, so a failed search there is tried again. s.mu is held.
+func (s *server) awaited(region string) bool {
+	for _, r := range s.rounds {
+		if r.Number == 0 && r.Region == region {
+			return true
+		}
+	}
+	return false
 }
 
 // nextSearch is the region to look in next: the first a /geo asked for
