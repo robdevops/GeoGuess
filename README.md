@@ -41,7 +41,7 @@ You need signalbot main at `d685491` or newer, and Go 1.27 or newer.
    ```
    git clone https://github.com/robdevops/chat-plugin-geoguess.git
    cd chat-plugin-geoguess
-   CGO_ENABLED=0 go build -ldflags='-s -w' -o /opt/signalbot-addons/geoguess .
+   CGO_ENABLED=0 go build -ldflags='-s -w' -o /tmp/geoguess . && sudo install -D -m 755 /tmp/geoguess /opt/signalbot-addons/geoguess
    ```
 
 2. **Get a Mapillary token.** Register an app at
