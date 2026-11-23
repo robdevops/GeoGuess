@@ -260,7 +260,7 @@ func (s *server) start(ctx context.Context, c *addon.Context, length time.Durati
 	r.Answer, r.Place = photo.At, photo.Place.Name
 	r.Credit = credit{Creator: photo.Creator, Source: photo.Source, Licence: photo.Licence, Link: photo.Link}
 	s.arm(r)
-	text, meta := roundLine(r)+caption(r.Deadline, length, s.srv.Network()), watchMeta(r, false)
+	text, meta := roundLine(r)+caption(r.Deadline, length, s.srv.Network(), r.Number == 1), watchMeta(r, false)
 	s.mu.Unlock()
 	s.save()
 	s.log.Printf("round %s started: %s, a %s photo", r.ID, length, photo.Source)
@@ -336,9 +336,13 @@ func roundLine(r *round) string {
 	return fmt.Sprintf("**Round %d of %d** · ", r.Number, r.of())
 }
 
-// caption is the photo's caption: how to guess, on the chat network the
-// bot said it is on, and by when.
-func caption(deadline time.Time, length time.Duration, network string) string {
+// caption is the photo's caption: by when to guess and, for round 1
+// (first), how, on the chat network the bot said it is on.
+func caption(deadline time.Time, length time.Duration, network string, first bool) string {
+	when := "🌍 **Where is this?** Send a location before " + deadline.Local().Format("15:04") + " (" + lengthLabel(length) + ")."
+	if !first {
+		return when
+	}
 	steps := "Signal: **+** → Location; Telegram: 📎 → Location. Pinch to zoom out, **drag the pin**, confirm (on Signal), then send."
 	switch network {
 	case "signal":
@@ -346,7 +350,7 @@ func caption(deadline time.Time, length time.Duration, network string) string {
 	case "telegram":
 		steps = "Tap 📎 → Location, pinch to zoom out, **drag the pin**, then send."
 	}
-	return "🌍 **Where is this?** Send a location before " + deadline.Local().Format("15:04") + " (" + lengthLabel(length) + ").\n" +
+	return when + "\n" +
 		steps + " Or type coordinates, e.g. `-37.81, 144.96`.\n" +
 		"⚠️ Location starts at *your* position. Move the pin before you send."
 }
@@ -537,7 +541,7 @@ func (s *server) openLocked(r *round, number int) {
 	r.Answer, r.Place, r.Guesses = photo.At, photo.Place.Name, map[string]guess{}
 	r.Credit = credit{Creator: photo.Creator, Source: photo.Source, Licence: photo.Licence, Link: photo.Link}
 	s.arm(r)
-	s.queue(addon.Op{Op: "post", Chat: chat, Text: roundLine(r) + caption(r.Deadline, length, s.srv.Network()),
+	s.queue(addon.Op{Op: "post", Chat: chat, Text: roundLine(r) + caption(r.Deadline, length, s.srv.Network(), r.Number == 1),
 		Images: []addon.Image{{Data: base64.StdEncoding.EncodeToString(photo.JPEG), MimeType: "image/jpeg", Name: "geoguess.jpg"}}})
 	s.log.Printf("round %d of game %s started: %s, a %s photo", number, r.ID, length, photo.Source)
 }

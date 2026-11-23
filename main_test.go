@@ -397,8 +397,8 @@ const (
 	bob   = "u_bob"
 )
 
-// The caption gives the steps for the network the bot said it is on, and
-// both when it said none.
+// Round 1's caption gives the steps for the network the bot said it is
+// on, and both when it said none; a later round's only when to guess by.
 func TestCaption(t *testing.T) {
 	at := time.Date(2026, 11, 20, 14, 3, 0, 0, time.Local)
 	for _, tc := range []struct{ network, want, not string }{
@@ -406,11 +406,14 @@ func TestCaption(t *testing.T) {
 		{"telegram", "Tap 📎 → Location, pinch to zoom out, **drag the pin**, then send.", "confirm"},
 		{"", "Signal: **+** → Location; Telegram: 📎 → Location. Pinch to zoom out, **drag the pin**, confirm (on Signal), then send.", "Tap"},
 	} {
-		got := caption(at, 3*time.Minute, tc.network)
+		got := caption(at, 3*time.Minute, tc.network, true)
 		if !strings.Contains(got, tc.want) || strings.Contains(got, tc.not) || !strings.Contains(got, "14:03 (3 min)") ||
 			!strings.Contains(got, "-37.81, 144.96") || !strings.Contains(got, "Move the pin before you send") {
 			t.Errorf("%q: %q", tc.network, got)
 		}
+	}
+	if got := caption(at, 3*time.Minute, "signal", false); got != "🌍 **Where is this?** Send a location before 14:03 (3 min)." {
+		t.Errorf("a later round: %q", got)
 	}
 }
 
@@ -478,7 +481,7 @@ func TestRound(t *testing.T) {
 	if data, _ := base64.StdEncoding.DecodeString(r.Content[0].Data); !bytes.HasPrefix(data, []byte("jpeg ")) {
 		t.Errorf("image %q", data)
 	}
-	want := caption(began.Add(90*time.Second), 90*time.Second, "")
+	want := caption(began.Add(90*time.Second), 90*time.Second, "", true)
 	if words(r) != want || !strings.Contains(want, "(90 sec)") {
 		t.Errorf("caption %q", words(r))
 	}

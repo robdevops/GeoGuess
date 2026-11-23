@@ -266,8 +266,9 @@ their cancellation, and the outbox the bot reads. GeoGuess adds:
 
 - `geo` (`{args}`) and `geo_guess` (`{text}`, or `{reaction, removed}` for
   a reaction), both for the bot alone, so neither is offered to the model.
-- The caption gives the steps for the network the bot said it is on
-  (Signal's **+** button, or Telegram's 📎); with none, it gives both.
+- Round 1's caption gives the steps for the network the bot said it is
+  on (Signal's **+** button, or Telegram's 📎); with none, it gives both.
+  Later rounds' captions say only when to guess by.
 - Starting a game answers with one watch for `geo_guess` for the whole
   game, until 5s past its latest end, with `guard` "No hints during a
   round 😉" and `over` "That game is over. Start another with /geo.". In a
