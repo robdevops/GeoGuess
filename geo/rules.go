@@ -12,7 +12,7 @@ type Reject string
 func (r Reject) Error() string { return string(r) }
 
 // The reasons a candidate is rejected, from its metadata and then its
-// pixels.
+// pixels; RejectRoad is an off-road search's spot on a road.
 const (
 	RejectQuality    Reject = "low quality"
 	RejectUndated    Reject = "no capture time"
@@ -31,6 +31,7 @@ const (
 	RejectDashboard  Reject = "dashboard"
 	RejectBare       Reject = "little detail"
 	RejectNoPlace    Reject = "no country"
+	RejectRoad       Reject = "on a road"
 )
 
 // Rules are the metadata checks, which need no download.

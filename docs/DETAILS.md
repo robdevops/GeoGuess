@@ -44,6 +44,32 @@ A round's length is 30s to 30m. The game, with a possible tie-breaker,
 lasts at most 50 minutes; `/geo` with rounds too long for that says so.
 A length and regions combine, as in `/geo europe 90s`.
 
+`/geo offroad` plays a game whose every round's photo was taken off
+roads: on a footpath, track or trail, or in a park, nature, a beach or
+the countryside. It combines with a length and regions in any order, as
+in `/geo offroad AU,NZ 90s`, and its intro says "off-road". Before a
+photo is downloaded, GeoGuess asks Nominatim what is at its spot (a
+reverse lookup at zoom 17) and keeps it only if that is a path, footway,
+cycleway, track, bridleway or steps (`highway`); anything `natural` or a
+`mountain_pass`; a river, stream, waterfall or rapids (`waterway`); a park, nature reserve, garden, common, recreation
+ground, golf course or beach resort (`leisure`); a national park or
+protected area (`boundary`); forest, meadow, grass, farmland, vineyard,
+orchard, allotments or a recreation ground (`landuse`); a viewpoint,
+picnic site, camp site or hut (`tourism`); or a locality, island or islet
+(`place`). A road, building, shop, address or a spot Nominatim can't
+name is turned down. The check is approximate: it judges the nearest
+feature Nominatim knows, so an unnamed trail may be passed over and a
+road through a park may get through. That is one more request per photo
+looked at, at Nominatim's one a second, so off-road photos are slower to
+find (up to 6 are looked up in each area searched, and Nominatim
+rate-limiting or blocking them stops the search for a minute);
+`GEO_KEEP=offroad` keeps one ready. One search runs at a time, so a slow
+off-road search can hold up a `/geo` for another region for up to its 3
+minutes. While a round of a game with a region is played, the next
+round's photo is already being looked for.
+A plain `/geo` may use an off-road photo too, but leaves the one
+`GEO_KEEP` keeps when another will do.
+
 `/geo end` (or `stop`) reveals the round and the totals; in the lobby it
 calls the game off. `/geo skip` goes on to the next round without
 scoring this one. Only the player who started the game may do either.
@@ -133,11 +159,11 @@ through the bot's proxy, and trusts its CA), and nothing else.
 | `GEO_MAPILLARY_TOKEN` | empty | Mapillary client token (`MLY\|…`), sent as `Authorization: OAuth <token>`. Empty means Panoramax only, and then rounds are in France unless `GEO_REGIONS` says otherwise |
 | `GEO_MEMLIMIT` | `200MiB` | Memory limit, applied with `debug.SetMemoryLimit`, written as `GOMEMLIMIT` is (`B`, `KiB`, `MiB`, `GiB`, `TiB`), at least `16MiB` |
 | `GEO_ROUND` | `3m` | Default round length, 30s to 30m |
-| `GEO_REGIONS` | empty (world) | Continents (`europe`, `asia`, `africa`, `north-america`, `south-america`, `oceania`) or ISO country codes, comma-separated |
+| `GEO_REGIONS` | empty (world) | Continents (`europe`, `asia`, `africa`, `north-america`, `south-america`, `oceania`) or ISO country codes, comma-separated. Not `offroad`, which is a kind of game: use `GEO_KEEP=offroad` |
 | `GEO_MIN_QUALITY` | `0.5` | Minimum Mapillary `quality_score` (0 to 1), when a photo has one |
 | `GEO_MAX_AGE_YEARS` | `10` | Ignore older photos; more than 0, up to 100 |
 | `GEO_BUFFER` | `3` | Checked photos kept ready (1 to 20) |
-| `GEO_KEEP` | empty | Regions to always keep a photo ready for, comma-separated, in `GEO_REGIONS`'s names, one photo each: `AU,NZ` keeps one Australian and one New Zealand photo, so `/geo AU` answers at once. Searched before topping up `GEO_BUFFER` (a region whose search fails is tried again after a backoff, and the buffer fills meanwhile), never dropped to make room or used by a `/geo` another photo can serve, and refilled once used |
+| `GEO_KEEP` | empty | Regions to always keep a photo ready for, comma-separated, in `GEO_REGIONS`'s names, one photo each: `AU,NZ` keeps one Australian and one New Zealand photo, so `/geo AU` answers at once. `offroad` keeps one off-road photo ready for `/geo offroad`, and `offroad AU` one off roads in Australia, for `/geo offroad AU` (commas separate kept regions, so `offroad,AU` keeps two photos: one off roads anywhere and one in Australia). Searched before topping up `GEO_BUFFER` (a region whose search fails is tried again after a backoff, and the buffer fills meanwhile), never dropped to make room or used by a `/geo` another photo can serve, and refilled once used |
 | `GEO_WAIT` | `50s` | How long `/geo` waits for a photo when none is ready, 5s to 110s, before saying to try again; the search carries on either way. Keep the `geo` chat command's `timeout` above it |
 | `GEO_NOMINATIM_URL` | `https://nominatim.openstreetmap.org` | Reverse geocoder for the place names; `https://` only, as it is sent each round's answer |
 | `GEO_PANORAMAX_URL` | `https://api.panoramax.xyz` | Panoramax API (a STAC catalogue), such as one instance's; `https://` only |
@@ -160,7 +186,9 @@ the model or kept in the chat's history.
 
 What it sends out is about photos, never about players: map areas to
 search and photo IDs to Mapillary and Panoramax, and the answer's
-coordinates to Nominatim for the place's name, each with the user agent
+coordinates to Nominatim for the place's name (and, in an off-road game,
+each candidate photo's coordinates, to check it is off roads), each with
+the user agent
 `geoguess (+https://github.com/robdevops/GeoGuess)`.
 
 A guess deleted for everyone afterwards is not passed on to GeoGuess,
@@ -179,10 +207,15 @@ which keeps only its distance anyway.
 - 7 days of points per chat, by player pseudonym;
 - outbox ops the bot hasn't read yet, for at most an hour.
 
+The photos kept ready are held in memory only, each marked if it passed
+the off-road check; an open game's region keeps `offroad` for an
+off-road game, so its later rounds are off roads too.
+
 `$GEO_STATE_DIR/geoguess.log` (moved to `geoguess.log.1` past 4 MiB at
 start) records lobbies and their player counts, rounds started, ended
-early and revealed with their guess counts, photos rejected by reason, and
-API errors by status. It never holds a guess, a coordinate, a place or
+early and revealed with their guess counts, photos rejected by reason
+(such as "on a road", an off-road game's spot on a road), and API errors
+by status. It never holds a guess, a coordinate, a place or
 person's name, a pseudonym or message text.
 
 ## The protocol

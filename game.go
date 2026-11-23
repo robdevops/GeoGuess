@@ -22,8 +22,9 @@ const (
 	noChat    = "GeoGuess works only in a chat."
 	noRound   = "There's no round on. Start one with /geo."
 	noPhoto   = "I couldn't find a good spot in time; I'm still looking, so try /geo again in a minute."
+	noOffroad = "Off-road spots take longer to find; I'm still looking, so try again in a couple of minutes."
 	badLength = "A round can be 30s to 30m, such as /geo 90s or /geo 5m."
-	usage     = "Try /geo, /geo 90s, /geo end, /geo skip, /geo scores, or a region such as /geo europe or /geo AU,NZ."
+	usage     = "Try /geo, /geo 90s, /geo end, /geo skip, /geo scores, /geo offroad, or a region such as /geo europe or /geo AU,NZ."
 	longGame  = "That game would run too long: ask for shorter rounds, such as /geo 5m."
 )
 
@@ -81,7 +82,8 @@ func fromChat(c *addon.Context) bool {
 	return c != nil && validID(c.Chat, "c_") && validID(c.Sender, "u_")
 }
 
-// command is /geo with its arguments.
+// command is /geo with its arguments: end, skip or scores, or a game's
+// round length, regions and offroad, in any order.
 func (s *server) command(ctx context.Context, c *addon.Context, args string) addon.Result {
 	if !fromChat(c) {
 		return addon.Result{Content: addon.Text(noChat).Content, IsError: true}
@@ -110,12 +112,13 @@ func (s *server) command(ctx context.Context, c *addon.Context, args string) add
 		}
 		regions = append(regions, f)
 	}
-	region := strings.Join(regions, ",")
+	off, region := splitOffroad(strings.Join(regions, ","))
 	if region != "" {
 		if _, err := s.regionSeeds(region); err != nil {
 			return addon.Text("I don't know that region. " + usage)
 		}
 	}
+	region = withOffroad(off, region)
 	if of := s.perGame; gameTime(of, length, s.cfg.Wait+s.cfg.gap) > maxGame {
 		return addon.Text(longGame)
 	}
@@ -159,6 +162,9 @@ func (s *server) start(ctx context.Context, c *addon.Context, length time.Durati
 	}
 	photo, ok := s.take(ctx, region, wait)
 	if !ok {
+		if off, _ := splitOffroad(region); off {
+			return addon.Text(noOffroad)
+		}
 		return addon.Text(noPhoto)
 	}
 	s.mu.Lock()
@@ -207,6 +213,7 @@ func (s *server) start(ctx context.Context, c *addon.Context, length time.Durati
 		r.Players = []string{c.Sender}
 	}
 	s.arm(r)
+	s.wantNext(r)
 	s.mu.Unlock()
 	s.save()
 	s.log.Printf("round %s started: %s, a %s photo", r.ID, length, photo.Source)
@@ -400,10 +407,23 @@ func (s *server) openLocked(r *round, number int, photo geo.Photo) {
 		r.Answer, r.Place, r.Guesses = photo.At, photo.Place.Name, map[string]guess{}
 		r.Credit = credit{Creator: photo.Creator, Source: photo.Source, Licence: photo.Licence, Link: photo.Link}
 		s.arm(r)
+		s.wantNext(r)
 		s.queue(addon.Op{Op: "post", Chat: chat, Text: roundLine(r) + caption(r.Deadline, length, s.srv.Network()),
 			Images: []addon.Image{{Data: base64.StdEncoding.EncodeToString(photo.JPEG), MimeType: "image/jpeg", Name: "geoguess.jpg"}}})
 		s.log.Printf("round %d of game %s started: %s, a %s photo", number, r.ID, length, photo.Source)
 	}
+}
+
+// wantNext asks the prefetcher for a photo for the next round of r's game
+// while this one is played, if the game has a region the buffer lacks, so
+// the next round needn't wait on a slow search (an off-road one, say).
+// s.mu is held.
+func (s *server) wantNext(r *round) {
+	if r.Region == "" || r.Number >= r.of() || s.match(r.Region) >= 0 {
+		return
+	}
+	s.wants[r.Region] = true
+	s.wakeUp()
 }
 
 // tied is the players tied for the most round wins, if more than one and
@@ -671,9 +691,13 @@ func (s *server) guess(c *addon.Context, msg string) addon.Result {
 
 // lobbyIntro is /geo's answer in a group: the game, and how to join.
 func lobbyIntro(r *round) string {
-	return fmt.Sprintf("🌍 **GeoGuess** · %d rounds of %s: guess where each photo was taken.\n"+
+	kind := ""
+	if off, _ := splitOffroad(r.Region); off {
+		kind = "off-road · "
+	}
+	return fmt.Sprintf("🌍 **GeoGuess** · %s%d rounds of %s: guess where each photo was taken.\n"+
 		"👋 **React to this message with any emoji to join**, whoever started it too: the game starts 30 seconds after the last player joins, once at least 2 have; a round ends as soon as everyone who joined has guessed.",
-		r.of(), lengthLabel(r.Length))
+		kind, r.of(), lengthLabel(r.Length))
 }
 
 // reacted is a reaction to the game's messages: in the lobby, a player

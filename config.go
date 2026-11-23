@@ -24,7 +24,7 @@ type config struct {
 	MinQuality float64       // GEO_MIN_QUALITY: the least Mapillary quality_score
 	MaxAge     time.Duration // GEO_MAX_AGE_YEARS, as a duration
 	Buffer     int           // GEO_BUFFER: checked photos kept ready
-	Keep       []string      // GEO_KEEP: regions always kept with a photo ready, one each
+	Keep       []string      // GEO_KEEP: regions always kept with a photo ready, one each; "offroad" or "offroad AU" (an off-road photo in AU, kept as "offroad,AU")
 	Wait       time.Duration // GEO_WAIT: how long /geo waits for a photo when none is ready
 	Nominatim  string        // GEO_NOMINATIM_URL
 	Panoramax  string        // GEO_PANORAMAX_URL
@@ -71,7 +71,9 @@ func loadConfig(getenv func(string) string) (config, error) {
 			errs = append(errs, fmt.Errorf("GEO_ROUND: %v", err))
 		}
 	}
-	if _, err := geo.LoadSeeds(c.Regions); err != nil {
+	if off, _ := splitOffroad(c.Regions); off {
+		errs = append(errs, errors.New("GEO_REGIONS: offroad is a kind of game, not a region: use /geo offroad, or GEO_KEEP=offroad to keep an off-road photo ready"))
+	} else if _, err := geo.LoadSeeds(c.Regions); err != nil {
 		errs = append(errs, fmt.Errorf("GEO_REGIONS: %v", err))
 	}
 	c.MinQuality = 0.5
@@ -93,16 +95,24 @@ func loadConfig(getenv func(string) string) (config, error) {
 			errs = append(errs, fmt.Errorf("GEO_BUFFER is %q: use a whole number from 1 to 20", v))
 		}
 	}
+	// Each of GEO_KEEP's regions may be offroad, or "offroad AU" for one
+	// off roads in a region, kept as /geo offroad AU keys it. Only with
+	// offroad may an entry hold spaces.
 	for _, region := range strings.Split(getenv("GEO_KEEP"), ",") {
-		region = strings.TrimSpace(region)
-		if region == "" {
+		off, rest := splitOffroad(strings.Join(strings.Fields(region), ","))
+		if !off {
+			rest = strings.TrimSpace(region)
+		}
+		if !off && rest == "" {
 			continue
 		}
-		if _, err := geo.LoadSeeds(region); err != nil {
-			errs = append(errs, fmt.Errorf("GEO_KEEP: %v", err))
-			continue
+		if rest != "" {
+			if _, err := geo.LoadSeeds(rest); err != nil {
+				errs = append(errs, fmt.Errorf("GEO_KEEP: %v", err))
+				continue
+			}
 		}
-		c.Keep = append(c.Keep, region)
+		c.Keep = append(c.Keep, withOffroad(off, rest))
 	}
 	c.Wait = defaultWait
 	c.gap = gapTime

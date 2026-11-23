@@ -237,9 +237,45 @@ func (s *server) match(region string) int {
 	return slices.IndexFunc(s.buffer, func(p geo.Photo) bool { return s.in(p, region) })
 }
 
+// offroad is the token in a region that asks for photos off roads, as in
+// /geo offroad: "offroad", or "offroad,europe" with regions.
+const offroad = "offroad"
+
+// splitOffroad is region without its offroad token, and whether it had
+// one. The rest is what geo.LoadSeeds reads.
+func splitOffroad(region string) (bool, string) {
+	var off bool
+	var rest []string
+	for _, r := range strings.Split(region, ",") {
+		switch r = strings.TrimSpace(r); {
+		case strings.EqualFold(r, offroad):
+			off = true
+		case r != "":
+			rest = append(rest, r)
+		}
+	}
+	return off, strings.Join(rest, ",")
+}
+
+// withOffroad is rest with the offroad token first if off: the region a
+// /geo offroad keys the buffer by.
+func withOffroad(off bool, rest string) string {
+	switch {
+	case !off:
+		return rest
+	case rest == "":
+		return offroad
+	}
+	return offroad + "," + rest
+}
+
 // in reports whether p is in region ("" is GEO_REGIONS, and empty too the
-// world). s.mu is held.
+// world), and off roads if region asks for that. s.mu is held.
 func (s *server) in(p geo.Photo, region string) bool {
+	off, region := splitOffroad(region)
+	if off && !p.Offroad {
+		return false
+	}
 	if region == "" {
 		region = s.cfg.Regions
 	}
@@ -250,14 +286,15 @@ func (s *server) in(p geo.Photo, region string) bool {
 	return err == nil && seeds.Has(p.Place.CountryCode)
 }
 
-// regionSeeds is the seeds for region, a /geo argument, or an error if it
-// names none.
+// regionSeeds is the seeds for region, a /geo argument without the
+// offroad token, or an error if it names none.
 func (s *server) regionSeeds(region string) (*geo.Seeds, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.seedsLocked(region)
 }
 
+// seedsLocked is regionSeeds with s.mu held.
 func (s *server) seedsLocked(region string) (*geo.Seeds, error) {
 	key := strings.ToUpper(region)
 	if seeds := s.seeds[key]; seeds != nil {
@@ -291,23 +328,36 @@ type search struct {
 	regions string // GEO_REGIONS
 }
 
-// Find looks for one photo. It logs only counts of rejections, by reason,
-// and errors, which hold no URL.
-func (f *search) Find(ctx context.Context, regions string) (geo.Photo, error) {
+// seedsFor is whether regions asks for photos off roads, and the seeds of
+// the rest of it, or of GEO_REGIONS with none.
+func (f *search) seedsFor(regions string) (bool, *geo.Seeds, error) {
+	off, regions := splitOffroad(regions)
 	if regions == "" {
 		regions = f.regions
 	}
-	seeds := f.seeds[regions]
-	if seeds == nil {
-		var err error
-		if seeds, err = geo.LoadSeeds(regions); err != nil {
-			return geo.Photo{}, err
-		}
-		f.seeds[regions] = seeds
+	if seeds := f.seeds[regions]; seeds != nil {
+		return off, seeds, nil
+	}
+	seeds, err := geo.LoadSeeds(regions)
+	if err != nil {
+		return off, nil, err
+	}
+	f.seeds[regions] = seeds
+	return off, seeds, nil
+}
+
+// Find looks for one photo, off roads if regions has the offroad token.
+// It logs only counts of rejections, by reason, and errors, which hold no
+// URL.
+func (f *search) Find(ctx context.Context, regions string) (geo.Photo, error) {
+	off, seeds, err := f.seedsFor(regions)
+	if err != nil {
+		return geo.Photo{}, err
 	}
 	rejected := map[string]int{}
 	finder := geo.Finder{
 		Sources: f.sources, Seeds: seeds, Rules: f.rules, Places: f.places, Rand: f.rand, Now: time.Now,
+		Offroad:  off,
 		Used:     f.used,
 		Rejected: func(source string, why geo.Reject) { rejected[source+": "+string(why)]++ },
 		Failed:   func(err error) { f.log.Printf("search failed: %v", err) },

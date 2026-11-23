@@ -11,8 +11,9 @@ import (
 // a round.
 type Photo struct {
 	Candidate
-	Place Place
-	JPEG  []byte
+	Place   Place
+	JPEG    []byte
+	Offroad bool // it passed the off-road check
 }
 
 // Finder looks for a photo worth a round: it picks a seed region, searches
@@ -24,6 +25,9 @@ type Finder struct {
 	Places  *Nominatim
 	Rand    *rand.Rand
 	Now     func() time.Time
+	// Offroad finds only photos off roads: each candidate is looked up
+	// with Places.Offroad before its download.
+	Offroad bool
 
 	// Used reports whether a candidate's Key was used recently; nil is none.
 	Used func(key string) bool
@@ -34,12 +38,16 @@ type Finder struct {
 	Failed func(err error)
 }
 
-// The search's limits: boxes tried in a seed, seeds tried in one Find, and
-// photos downloaded from one box.
+// The search's limits: boxes tried in a seed, seeds tried in one Find,
+// photos downloaded from one box, and in an off-road search, candidates
+// looked up in one box. A lookup waits its turn at Nominatim's one a
+// second, so a box costs at most about 9s of lookups, and ctx (the
+// caller's timeout) ends a Find that runs long.
 const (
 	boxesPerSeed  = 4
 	seedsPerFind  = 8
 	fetchesPerBox = 3
+	offroadPerBox = 6
 )
 
 // ErrNotFound is a Find that tried its seeds and found nothing.
@@ -80,7 +88,35 @@ func (f *Finder) search(ctx context.Context, src Source, box BBox) (Photo, error
 	}
 	kept := f.Rules.Filter(cands, f.Now(), f.Used, reject)
 	f.Rand.Shuffle(len(kept), func(i, j int) { kept[i], kept[j] = kept[j], kept[i] })
-	for _, c := range kept[:min(len(kept), fetchesPerBox)] {
+	tries := fetchesPerBox
+	if f.Offroad {
+		tries = offroadPerBox
+	}
+	fetches := 0
+	for _, c := range kept[:min(len(kept), tries)] {
+		if fetches == fetchesPerBox {
+			break
+		}
+		if f.Offroad {
+			off, err := f.Places.Offroad(ctx, c.At)
+			if err != nil {
+				if ctx.Err() != nil {
+					return Photo{}, ctx.Err()
+				}
+				if errors.Is(err, ErrSlowDown) {
+					return Photo{}, err
+				}
+				if f.Failed != nil {
+					f.Failed(err)
+				}
+				continue
+			}
+			if !off {
+				reject(RejectRoad)
+				continue
+			}
+		}
+		fetches++
 		data, err := src.Fetch(ctx, c)
 		if err != nil {
 			if ctx.Err() != nil {
@@ -107,7 +143,7 @@ func (f *Finder) search(ctx context.Context, src Source, box BBox) (Photo, error
 			}
 			continue
 		}
-		return Photo{Candidate: c, Place: place, JPEG: jpeg}, nil
+		return Photo{Candidate: c, Place: place, JPEG: jpeg, Offroad: f.Offroad}, nil
 	}
 	return Photo{}, ErrNotFound
 }

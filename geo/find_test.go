@@ -176,3 +176,69 @@ func TestFindErrors(t *testing.T) {
 		t.Errorf("cancelled: %v", err)
 	}
 }
+
+// An off-road search looks each candidate up before its download: one on
+// a road is rejected and never downloaded, and one on a path is the photo.
+func TestFindOffroad(t *testing.T) {
+	noon := time.Date(2024, 12, 21, 2, 19, 0, 0, time.UTC)
+	road, path := Point{-37.56, 143.85}, Point{-37.57, 143.86}
+	c := func(id string, at Point) Candidate {
+		return Candidate{ID: id, Source: "Fake", Sequence: id, At: at, Raw: at, Captured: noon, Quality: 0.9}
+	}
+	photo := jpegOf(t, scene(1024, 768, rand.New(rand.NewPCG(5, 5))))
+	src := &fakeSource{
+		cands:  []Candidate{c("road", road), c("path", path)},
+		photos: map[string][]byte{"road": photo, "path": photo},
+	}
+	f, rejects, _ := newTestFinder(t, "Australia", src)
+	api := newFakeAPI(t)
+	api.handle = func(w http.ResponseWriter, r *http.Request) {
+		switch q := r.URL.Query(); {
+		case q.Get("zoom") == "10":
+			w.Write([]byte(`{"address":{"town":"Ballarat","state":"Victoria","country":"Australia","country_code":"au"}}`))
+		case q.Get("lat") == coord(road.Lat):
+			w.Write([]byte(`{"category":"highway","type":"residential"}`))
+		default:
+			w.Write([]byte(`{"category":"highway","type":"footway"}`))
+		}
+	}
+	f.Places = NewNominatim(api.URL, api.Client())
+	f.Places.pace.every = 0
+	f.Offroad = true
+	for range 5 {
+		*rejects, src.fetched = nil, nil
+		p, err := f.Find(context.Background())
+		if err != nil || p.ID != "path" || !p.Offroad || p.Place.CountryCode != "AU" {
+			t.Fatalf("found %+v, offroad %v: %v", p.Candidate, p.Offroad, err)
+		}
+		if slices.Contains(src.fetched, "road") {
+			t.Fatal("the photo on a road was downloaded")
+		}
+		if len(*rejects) > 0 && !slices.Equal(*rejects, []Reject{RejectRoad}) {
+			t.Errorf("rejected for %v", *rejects)
+		}
+	}
+
+	// Only roads: nothing is downloaded.
+	src.cands, src.fetched = []Candidate{c("road", road)}, nil
+	if _, err := f.Find(context.Background()); err != ErrNotFound || len(src.fetched) != 0 {
+		t.Errorf("roads only: %v, fetched %v", err, src.fetched)
+	}
+
+	// Nominatim rate-limiting the check stops the search at once.
+	src.cands, src.fetched = []Candidate{c("path", path), c("path2", path)}, nil
+	handle := api.handle
+	api.handle = func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusTooManyRequests) }
+	before := len(api.requests())
+	if _, err := f.Find(context.Background()); err != ErrSlowDown || len(api.requests())-before != 1 || len(src.fetched) != 0 {
+		t.Errorf("rate-limited: %v after %d requests, fetched %v", err, len(api.requests())-before, src.fetched)
+	}
+	api.handle = handle
+
+	// Without Offroad a photo is not marked off roads.
+	f.Offroad = false
+	src.cands = []Candidate{c("path", path)}
+	if p, err := f.Find(context.Background()); err != nil || p.Offroad {
+		t.Errorf("plain: %v, %v", p.Offroad, err)
+	}
+}
