@@ -15,7 +15,7 @@ A game is 3 rounds, 3 photos. A round ends at its time, or as soon as all
 the game's players have guessed (3s later, for guesses still on their
 way), so a game goes as fast as its players. Anyone else may still guess
 and score, but isn't waited for. Each round's results come out when it
-ends, then, 5 seconds later so they can be read, the next photo, whose
+ends, then, 10 seconds later so they can be read, the next photo, whose
 time starts then.
 
 In a group, a game starts with a lobby: react to `/geo`'s answer with any

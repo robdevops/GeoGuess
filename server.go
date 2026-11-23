@@ -141,7 +141,7 @@ const (
 	gameRounds = 3
 	// gapTime is the pause between a round's results and the next photo,
 	// so players can read the results.
-	gapTime = 5 * time.Second
+	gapTime = 10 * time.Second
 	maxGame = 44 * time.Minute
 	// The lobby: how long after the last join the game starts, the players
 	// it needs, and how long it waits for them, within the watch's hour
