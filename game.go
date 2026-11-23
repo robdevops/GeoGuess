@@ -23,8 +23,9 @@ const (
 	noRound   = "There's no round on. Start one with /geo."
 	noPhoto   = "I couldn't find a good spot in time; I'm still looking, so try /geo again in a minute."
 	badLength = "A round can be 30s to 30m, such as /geo 90s or /geo 5m."
-	usage     = "Try /geo, /geo 90s, /geo end, /geo skip, /geo scores, /geo offroad, or a region such as /geo europe or /geo AU,NZ."
+	usage     = "Try /geo, /geo 90s, /geo end, /geo skip, /geo scores, or a region such as /geo europe or /geo AU,NZ."
 	longGame  = "That game would run too long: ask for shorter rounds, such as /geo 5m."
+	noSpot    = "I couldn't find a spot, so the game is off." // a game found no photo by fetchMax
 )
 
 // pin is the reaction to a recorded guess.
@@ -44,15 +45,9 @@ const (
 
 // fetching is /geo's answer in a DM, or a group without a lobby, while the
 // game's photos are gathered.
-func fetching(region string, of int) string {
-	off, _ := splitOffroad(region)
-	switch {
-	case of == 1 && off:
-		return "🔎 Fetching an off-road spot…"
-	case of == 1:
+func fetching(of int) string {
+	if of == 1 {
 		return "🔎 Fetching a spot…"
-	case off:
-		return fmt.Sprintf("🔎 Fetching off-road spots for %d rounds…", of)
 	}
 	return fmt.Sprintf("🔎 Fetching spots for %d rounds…", of)
 }
@@ -67,14 +62,6 @@ func stillFetching(have, of int) string {
 // photos by fetchMax, and so plays n rounds.
 func shortGame(n int) string {
 	return fmt.Sprintf("Only found %d %s, so this game is %d %s.", n, plural(n, "spot", "spots"), n, plural(n, "round", "rounds"))
-}
-
-// noSpot is the post when a game found no photo by fetchMax.
-func noSpot(region string) string {
-	if off, _ := splitOffroad(region); off {
-		return "I couldn't find an off-road spot, so the game is off."
-	}
-	return "I couldn't find a spot, so the game is off."
 }
 
 // tools are GeoGuess's tools, both for the bot alone: neither is offered
@@ -125,7 +112,7 @@ func fromChat(c *addon.Context) bool {
 }
 
 // command is /geo with its arguments: end, skip or scores, or a game's
-// round length, regions and offroad, in any order.
+// round length and regions, in any order.
 func (s *server) command(ctx context.Context, c *addon.Context, args string) addon.Result {
 	if !fromChat(c) {
 		return addon.Result{Content: addon.Text(noChat).Content, IsError: true}
@@ -154,13 +141,12 @@ func (s *server) command(ctx context.Context, c *addon.Context, args string) add
 		}
 		regions = append(regions, f)
 	}
-	off, region := splitOffroad(strings.Join(regions, ","))
+	region := strings.Join(regions, ",")
 	if region != "" {
 		if _, err := s.regionSeeds(region); err != nil {
 			return addon.Text("I don't know that region. " + usage)
 		}
 	}
-	region = withOffroad(off, region)
 	s.mu.Lock()
 	of := s.perGame
 	s.mu.Unlock()
@@ -267,7 +253,7 @@ func (s *server) start(ctx context.Context, c *addon.Context, length time.Durati
 		s.mu.Unlock()
 		s.save()
 		s.log.Printf("game %s fetching its photos, %d of %d ready", r.ID, have, need(of))
-		return addon.Result{Content: addon.Text(fetching(region, of)).Content, Meta: meta}
+		return addon.Result{Content: addon.Text(fetching(of)).Content, Meta: meta}
 	}
 	photo := s.popLocked(r)
 	r.Number, r.Waiting, r.Started, r.Deadline = 1, false, now, now.Add(length)
@@ -523,7 +509,7 @@ func (s *server) giveUpLocked(r *round) {
 	n := len(r.Photos)
 	s.log.Printf("game %s stopped gathering photos: %d found", r.ID, n)
 	if n == 0 {
-		s.queue(addon.Op{Op: "post", Chat: r.Chat, Text: noSpot(r.Region)})
+		s.queue(addon.Op{Op: "post", Chat: r.Chat, Text: noSpot})
 		s.endGame(r)
 		return
 	}
@@ -824,13 +810,9 @@ func (s *server) guess(c *addon.Context, msg string) addon.Result {
 
 // lobbyIntro is /geo's answer in a group: the game, and how to join.
 func lobbyIntro(r *round) string {
-	kind := ""
-	if off, _ := splitOffroad(r.Region); off {
-		kind = "off-road · "
-	}
-	return fmt.Sprintf("🌍 **GeoGuess** · %s%d rounds of %s: guess where each photo was taken.\n"+
+	return fmt.Sprintf("🌍 **GeoGuess** · %d rounds of %s: guess where each photo was taken.\n"+
 		"👋 **React to this message with any emoji to join**, whoever started it too: the game starts 30 seconds after the last player joins, once at least 2 have; a round ends as soon as everyone who joined has guessed.",
-		kind, r.of(), lengthLabel(r.Length))
+		r.of(), lengthLabel(r.Length))
 }
 
 // reacted is a reaction to the game's messages: in the lobby, a player

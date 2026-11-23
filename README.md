@@ -9,7 +9,6 @@ the place and ranks players by how far off they were. A game is 3 rounds.
 /geo                 start a game (rounds of GEO_ROUND, default 3 minutes)
 /geo 90s | /geo 5m   rounds of that length (30s to 30m)
 /geo europe          a game in a continent or countries (/geo AU,NZ)
-/geo offroad         photos off roads: paths, parks, beaches, countryside (combines with a length and a region)
 /geo end, /geo stop  finish now, or call off the lobby (starter only)
 /geo skip            skip this round without scoring (starter only)
 /geo scores          this chat's totals over the last 7 days
@@ -32,8 +31,6 @@ the place and ranks players by how far off they were. A game is 3 rounds.
 - **Points:** the nearest guess wins a round. Most round wins takes the
   game, with points shown alongside. A tie gets a tie-breaker round.
 - **Early end:** a round ends once all players have guessed.
-- **Off-road:** `/geo offroad` (or `/geo europe offroad 5m`) plays a game
-  whose photos are all off roads. They take longer to find.
 - **No repeats:** none of the last 1,000 photos comes round again soon.
 - **After:** for an hour, a reply to the game's messages that asks the
   bot gets "That game is over. Start another with /geo."

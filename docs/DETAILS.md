@@ -45,37 +45,6 @@ A round's length is 30s to 30m. The game, with a possible tie-breaker,
 lasts at most 45 minutes; `/geo` with rounds too long for that says so.
 A length and regions combine, as in `/geo europe 90s`.
 
-`/geo offroad` plays a game whose every round's photo was taken off
-roads: on a footpath, track or trail, or in a park, nature, a beach or
-the countryside. It combines with a length and regions in any order, as
-in `/geo offroad AU,NZ 90s`, and its intro says "off-road". Before any
-photo is downloaded, GeoGuess sends the spots of up to 40 of an area's
-candidate photos to OpenStreetMap's Overpass API in one query, which
-returns the drivable roads within about 40 m of each (`highway` motorway
-to residential, service, living street, busway and their links) and the
-paths within about 20 m (path, footway, track, bridleway, steps,
-cycleway, less sidewalks and crossings), with their shapes, and counts
-for each spot the park, nature reserve, garden, common or recreation
-ground (`leisure`), wood, scrub, heath, grassland, beach, sand, bare
-rock, scree or wetland (`natural`), forest, meadow, grass, farmland,
-vineyard or orchard (`landuse`) and national park or protected area
-(`boundary`) areas it lies in (Overpass works that out, so a national
-park's outline is never downloaded). GeoGuess then measures the roads
-and paths itself: a drivable road within 40 m puts a spot on a road,
-however green its surroundings (so a dashcam on a divided road beside a
-park is turned down); otherwise it is off roads if a path is within 20 m
-or it is inside one of those areas, and anything else is turned down.
-Only the spots that pass are downloaded. The check is as good as
-OpenStreetMap's map there: an unmapped road or trail can fool it.
-Overpass is asked at most once every 2 seconds, one query for each area
-searched, so off-road photos are slower to find. Overpass being busy,
-rate-limiting or blocking the query stops that search, and off-road
-searches there wait a minute while other searches go on. One search runs
-at a time; a search only refilling the stock is stopped when a game
-starts gathering photos of another kind, but one for another game isn't,
-and may take up to 3 minutes. A plain `/geo` uses an off-road photo only
-when the stock has more than it keeps for off-road games.
-
 `/geo end` (or `stop`) reveals the round and the totals; in the lobby it
 calls the game off. `/geo skip` goes on to the next round without
 scoring this one. Only the player who started the game may do either.
@@ -90,7 +59,7 @@ photo for each of its rounds, and a spare for a tie-breaker (4 in all for
 3 rounds), from the stock of photos kept ready (below). With a photo for
 each round in hand, or within about 3 seconds, the game starts as above.
 Otherwise, in a DM or a group without a lobby, `/geo` answers "🔎 Fetching
-spots for 3 rounds…" ("off-road spots" for `/geo offroad`); in a lobby,
+spots for 3 rounds…"; in a lobby,
 `/geo` answers with the intro at once, the photos are gathered while
 players join, and if some are still missing
 when the countdown ends the bot posts "🔎 Still fetching: 2 of 3 spots
@@ -103,11 +72,10 @@ it off.
 A game gathers photos for at most 5 minutes from `/geo`. By then, with
 some, it plays that many rounds, saying so first ("Only found 2 spots, so
 this game is 2 rounds."); with none, the bot posts "I couldn't find a
-spot, so the game is off." ("an off-road spot" for `/geo offroad`). If
-the top players are tied after the last round and the game has no spare,
-points decide. However a game ends, the photos it reserved but didn't
-show go back to the stock, where a game still gathering photos may take
-them. A restart carries on gathering, to the same limit. A game being
+spot, so the game is off." If the top players are tied after the last
+round and the game has no spare, points decide. However a game ends, the
+photos it reserved but didn't show go back to the stock, where a game
+still gathering photos may take them. A restart carries on gathering, to the same limit. A game being
 started (its first few seconds) can't be ended yet: `/geo end` says to
 try again in a moment.
 
@@ -116,19 +84,20 @@ try again in a moment.
 GeoGuess keeps photos ready, found ahead by one search at a time:
 `GEO_BUFFER` (default 4, a full game with its spare) for `GEO_REGIONS`,
 and a full game's 4 for each `GEO_KEEP` region and for each of the 6 kinds
-of game (a region, `offroad`, or both, as in `offroad,AU`) most recently
-played in the last 7 days, so after one `/geo offroad` the next usually
-starts at once. The kinds are taken in turn, so a slow one (off-road
-photos are) can't hold up the rest, and one whose search fails waits its
-own backoff (5 seconds, doubling to 5 minutes, or a minute if Overpass is
-busy) while the others go on. The stock is kept on disk, so it survives a
-restart; at most 32 photos are kept in all, the stock and the photos games
-have reserved together. If what the stock is kept filled with comes to
+of game (regions, as in `/geo AU,NZ`) most recently played in the last 7
+days, so after one `/geo AU` the next usually starts at once. The kinds
+are taken in turn, so a slow one can't hold up the rest, and one whose
+search fails waits its own backoff (5 seconds, doubling to 5 minutes)
+while the others go on; a source asking to slow down holds up every
+search for a minute. One search runs at a time; a search only refilling
+the stock is stopped when a game starts gathering photos of another kind,
+but one for another game isn't, and may take up to 3 minutes. The stock
+is kept on disk, so it survives a restart; at most 32 photos are kept in
+all, the stock and the photos games have reserved together. If what the stock is kept filled with comes to
 more than that (a large `GEO_BUFFER`, or many `GEO_KEEP` regions), some
 kinds stay short; photos of a kind no longer kept are dropped first, then
 the oldest. A game takes the photos found for its own kind first, then
-those another kind can spare, then any other in its region (but an
-off-road one only if spare).
+those another kind can spare, then any other in its region.
 
 ### How a photo is found
 
@@ -142,7 +111,7 @@ or walk, so its photos look alike), up to 40 in a random order, and asks
 for their details (date, camera, quality, size, credit) in one call.
 Panoramax lists the area's photos in one search. The checks then go
 cheapest first: date, daylight, quality, size and GPS drift from the
-details, the off-road check if asked for, and only then at most 3
+details, and only then at most 3
 downloads an area, each checked for exposure, blur, sky and captions
 before its place is named.
 
@@ -227,20 +196,18 @@ through the bot's proxy, and trusts its CA), and nothing else.
 | `GEO_MAPILLARY_TOKEN` | empty | Mapillary client token (`MLY\|…`), sent as `Authorization: OAuth <token>`. Empty means Panoramax only, and then rounds are in France unless `GEO_REGIONS` says otherwise |
 | `GEO_MEMLIMIT` | `200MiB` | Memory limit, applied with `debug.SetMemoryLimit`, written as `GOMEMLIMIT` is (`B`, `KiB`, `MiB`, `GiB`, `TiB`), at least `16MiB` |
 | `GEO_ROUND` | `3m` | Default round length, 30s to 30m |
-| `GEO_REGIONS` | empty (world) | Continents (`europe`, `asia`, `africa`, `north-america`, `south-america`, `oceania`) or ISO country codes, comma-separated. Not `offroad`, which is a kind of game: use `GEO_KEEP=offroad` |
+| `GEO_REGIONS` | empty (world) | Continents (`europe`, `asia`, `africa`, `north-america`, `south-america`, `oceania`) or ISO country codes, comma-separated |
 | `GEO_MIN_QUALITY` | `0.5` | Minimum Mapillary `quality_score` (0 to 1), when a photo has one |
 | `GEO_MAX_AGE_YEARS` | `10` | Ignore older photos; more than 0, up to 100 |
 | `GEO_BUFFER` | `4` | Checked photos kept ready for `GEO_REGIONS` (1 to 20); 4 is a full game with its spare |
-| `GEO_KEEP` | empty | Regions to always keep a full game's photos ready for, comma-separated, in `GEO_REGIONS`'s names: `AU,NZ` keeps a game's worth for `/geo AU` and for `/geo NZ`. `offroad` keeps them for `/geo offroad`, and `offroad AU` for `/geo offroad AU` (commas separate kept regions, so `offroad,AU` keeps two: off roads anywhere, and in Australia). Kept as the regions games used lately are (see [the stock](#the-stock)), but for good |
+| `GEO_KEEP` | empty | Regions to always keep a full game's photos ready for, comma-separated, in `GEO_REGIONS`'s names: `AU,NZ` keeps a game's worth for `/geo AU` and for `/geo NZ`. Kept as the regions games used lately are (see [the stock](#the-stock)), but for good |
 | `GEO_NOMINATIM_URL` | `https://nominatim.openstreetmap.org` | Reverse geocoder for the place names; `https://` only, as it is sent each round's answer |
-| `GEO_OVERPASS_URL` | `https://overpass-api.de/api/interpreter` | Overpass API interpreter for the off-road check, such as another instance's; `https://` only, as it is sent candidate photos' spots |
 | `GEO_PANORAMAX_URL` | `https://api.panoramax.xyz` | Panoramax API (a STAC catalogue), such as one instance's; `https://` only |
 | `GEO_MAPILLARY_URL` | `https://graph.mapillary.com` | Mapillary Graph API; `https://` only |
 
 It reaches `graph.mapillary.com` and Mapillary's image CDN,
-`api.panoramax.xyz` and the Panoramax instances' image hosts, the
-Nominatim server, and for off-road games the Overpass server
-(`overpass-api.de`), over TLS 1.3.
+`api.panoramax.xyz` and the Panoramax instances' image hosts, and the
+Nominatim server, over TLS 1.3.
 
 ## Privacy
 
@@ -255,9 +222,7 @@ the model or kept in the chat's history.
 
 What it sends out is about photos, never about players: map areas to
 search and photo IDs to Mapillary and Panoramax, and the answer's
-coordinates to Nominatim for the place's name, and in an off-road game
-candidate photos' coordinates (nothing else) to Overpass, to check they
-are off roads, each with the user agent
+coordinates to Nominatim for the place's name, each with the user agent
 `geoguess (+https://github.com/robdevops/GeoGuess)`.
 
 A guess deleted for everyone afterwards is not passed on to GeoGuess,
@@ -278,22 +243,20 @@ which keeps only its distance anyway.
 
 - the photos kept ready and those open games reserved: each one's
   source, ID, author, licence, link, where it was taken and the place's
-  name, when it was found and the kind of game it was found for, and
-  whether it passed the off-road check; its JPEG is in
-  `$GEO_STATE_DIR/photos/`, one file each (mode 600), deleted once the
-  photo is shown or leaves the stock. At most 32 are kept; at start,
-  stocked photos over 7 days old are dropped, as are any whose file is
-  missing;
-- the kinds of game (regions, `offroad`) played in the last 7 days, the 6
+  name, when it was found and the kind of game it was found for; its
+  JPEG is in `$GEO_STATE_DIR/photos/`, one file each (mode 600), deleted
+  once the photo is shown or leaves the stock. At most 32 are kept; at
+  start, stocked photos over 7 days old are dropped, as are any whose
+  file is missing;
+- the kinds of game (regions) played in the last 7 days, the 6
   most recent, which are kept stocked.
 
 `$GEO_STATE_DIR/geoguess.log` (moved to `geoguess.log.1` past 4 MiB at
 start) records lobbies and their player counts, rounds started, ended
 early and revealed with their guess counts, photos rejected by reason
-(such as "on a road" and "not off-road", an off-road game's spot on a
-road or neither on a path nor in a park, nature or countryside, or
-"captioned", a photo with a caption bar burned into its top or bottom
-taller than 12% of it; a shorter bar is cropped off), and API errors by status. It never holds a guess, a coordinate, a place or
+(such as "captioned", a photo with a caption bar burned into its top or
+bottom taller than 12% of it; a shorter bar is cropped off), and API
+errors by status. It never holds a guess, a coordinate, a place or
 person's name, a pseudonym or message text.
 
 ## The protocol

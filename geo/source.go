@@ -96,11 +96,6 @@ func (e StatusError) Error() string { return e.Source + ": status " + strconv.It
 // wait a while before searching again.
 var ErrSlowDown = errors.New("rate limited")
 
-// ErrOverpassBusy is Overpass asking to be called less often. It is an
-// ErrSlowDown, but only off-road searches need Overpass, so a caller may
-// slow down only those.
-var ErrOverpassBusy = fmt.Errorf("Overpass busy: %w", ErrSlowDown)
-
 // maxPhoto caps a downloaded photo.
 const maxPhoto = 12 << 20
 

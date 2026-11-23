@@ -24,9 +24,8 @@ type config struct {
 	MinQuality float64       // GEO_MIN_QUALITY: the least Mapillary quality_score
 	MaxAge     time.Duration // GEO_MAX_AGE_YEARS, as a duration
 	Buffer     int           // GEO_BUFFER: photos kept ready for GEO_REGIONS
-	Keep       []string      // GEO_KEEP: regions always kept with a full game's photos ready; "offroad" or "offroad AU" (off roads in AU, kept as "offroad,AU")
+	Keep       []string      // GEO_KEEP: regions always kept with a full game's photos ready
 	Nominatim  string        // GEO_NOMINATIM_URL
-	Overpass   string        // GEO_OVERPASS_URL
 	Panoramax  string        // GEO_PANORAMAX_URL
 	Mapillary  string        // GEO_MAPILLARY_URL
 	gap        time.Duration // between a round's results and the next photo: gapTime, not a setting; 0 in most tests
@@ -52,7 +51,6 @@ func loadConfig(getenv func(string) string) (config, error) {
 		Token:     strings.TrimSpace(getenv("GEO_MAPILLARY_TOKEN")),
 		Regions:   strings.TrimSpace(getenv("GEO_REGIONS")),
 		Nominatim: cmp.Or(strings.TrimSpace(getenv("GEO_NOMINATIM_URL")), geo.NominatimURL),
-		Overpass:  cmp.Or(strings.TrimSpace(getenv("GEO_OVERPASS_URL")), geo.OverpassURL),
 		Panoramax: cmp.Or(strings.TrimSpace(getenv("GEO_PANORAMAX_URL")), geo.PanoramaxURL),
 		Mapillary: cmp.Or(strings.TrimSpace(getenv("GEO_MAPILLARY_URL")), geo.MapillaryURL),
 	}
@@ -70,9 +68,7 @@ func loadConfig(getenv func(string) string) (config, error) {
 			errs = append(errs, fmt.Errorf("GEO_ROUND: %v", err))
 		}
 	}
-	if off, _ := splitOffroad(c.Regions); off {
-		errs = append(errs, errors.New("GEO_REGIONS: offroad is a kind of game, not a region: use /geo offroad, or GEO_KEEP=offroad to keep an off-road photo ready"))
-	} else if _, err := geo.LoadSeeds(c.Regions); err != nil {
+	if _, err := geo.LoadSeeds(c.Regions); err != nil {
 		errs = append(errs, fmt.Errorf("GEO_REGIONS: %v", err))
 	}
 	c.MinQuality = 0.5
@@ -94,31 +90,21 @@ func loadConfig(getenv func(string) string) (config, error) {
 			errs = append(errs, fmt.Errorf("GEO_BUFFER is %q: use a whole number from 1 to 20", v))
 		}
 	}
-	// Each of GEO_KEEP's regions may be offroad, or "offroad AU" for one
-	// off roads in a region, kept as /geo offroad AU keys it. Only with
-	// offroad may an entry hold spaces.
 	for _, region := range strings.Split(getenv("GEO_KEEP"), ",") {
-		off, rest := splitOffroad(strings.Join(strings.Fields(region), ","))
-		if !off {
-			rest = strings.TrimSpace(region)
-		}
-		if !off && rest == "" {
+		if region = strings.TrimSpace(region); region == "" {
 			continue
 		}
-		if rest != "" {
-			if _, err := geo.LoadSeeds(rest); err != nil {
-				errs = append(errs, fmt.Errorf("GEO_KEEP: %v", err))
-				continue
-			}
+		if _, err := geo.LoadSeeds(region); err != nil {
+			errs = append(errs, fmt.Errorf("GEO_KEEP: %v", err))
+			continue
 		}
-		c.Keep = append(c.Keep, withOffroad(off, rest))
+		c.Keep = append(c.Keep, region)
 	}
 	c.gap = gapTime
 	c.grace = startGrace
-	// Over TLS only: the geocoder is sent each round's answer, and
-	// Overpass an off-road search's spots.
+	// Over TLS only: the geocoder is sent each round's answer.
 	for _, u := range []struct{ name, url string }{
-		{"GEO_NOMINATIM_URL", c.Nominatim}, {"GEO_OVERPASS_URL", c.Overpass}, {"GEO_PANORAMAX_URL", c.Panoramax}, {"GEO_MAPILLARY_URL", c.Mapillary},
+		{"GEO_NOMINATIM_URL", c.Nominatim}, {"GEO_PANORAMAX_URL", c.Panoramax}, {"GEO_MAPILLARY_URL", c.Mapillary},
 	} {
 		if !strings.HasPrefix(u.url, "https://") {
 			errs = append(errs, fmt.Errorf("%s must start with https://", u.name))

@@ -36,7 +36,7 @@ type retry struct {
 // filled for each key it is kept for, taking the keys in turn so one slow
 // key can't starve the rest. It is the only caller of Find. A key whose
 // search fails waits its own backoff while the others go on; a source
-// other than Overpass asking to slow down holds up every search.
+// asking to slow down holds up every search.
 func (s *server) prefetch(ctx context.Context) {
 	for {
 		key, ok, next := s.nextSearch(time.Now())
@@ -72,7 +72,7 @@ func (s *server) prefetch(ctx context.Context) {
 		s.retries[key] = retry{time.Now().Add(wait), min(r.failures+1, 10), errors.Is(err, geo.ErrSlowDown)}
 		s.mu.Unlock()
 		s.log.Printf("no photo found (%v); trying that region again in %s", err, wait)
-		if !errors.Is(err, geo.ErrSlowDown) || errors.Is(err, geo.ErrOverpassBusy) {
+		if !errors.Is(err, geo.ErrSlowDown) {
 			continue
 		}
 		t := time.NewTimer(wait)
@@ -198,17 +198,16 @@ func (s *server) nextSearch(now time.Time) (key string, ok bool, next time.Time)
 // add keeps a photo found for key, and marks it used so no later search
 // finds it again: it goes to a game gathering photos in its region, the
 // one it was found for first, which starts once it has a photo for each
-// round (an off-road photo to a game not asking for one only if the stock
-// has enough of them); else to the stock. Its JPEG is saved first.
+// round; else to the stock. Its JPEG is saved first.
 func (s *server) add(p geo.Photo, key string) {
-	k := kept{Candidate: p.Candidate, Place: p.Place, Offroad: p.Offroad, For: key, Found: s.clock.Now(), JPEG: p.JPEG}
+	k := kept{Candidate: p.Candidate, Place: p.Place, For: key, Found: s.clock.Now(), JPEG: p.JPEG}
 	s.writePhoto(k)
 	s.mu.Lock()
 	s.markUsed(p.Key())
 	delete(s.retries, key)
 	var to *round
 	for _, r := range s.gatherers() {
-		if !s.in(k, r.Region) || otherMode(k, r.Region) && s.stocked(key) < s.want(key) {
+		if !s.in(k, r.Region) {
 			continue
 		}
 		if to == nil || strings.EqualFold(r.Region, key) && !strings.EqualFold(to.Region, key) {
@@ -233,45 +232,9 @@ func (s *server) add(p geo.Photo, key string) {
 	}
 }
 
-// offroad is the token in a region that asks for photos off roads, as in
-// /geo offroad: "offroad", or "offroad,europe" with regions.
-const offroad = "offroad"
-
-// splitOffroad is region without its offroad token, and whether it had
-// one. The rest is what geo.LoadSeeds reads.
-func splitOffroad(region string) (bool, string) {
-	var off bool
-	var rest []string
-	for _, r := range strings.Split(region, ",") {
-		switch r = strings.TrimSpace(r); {
-		case strings.EqualFold(r, offroad):
-			off = true
-		case r != "":
-			rest = append(rest, r)
-		}
-	}
-	return off, strings.Join(rest, ",")
-}
-
-// withOffroad is rest with the offroad token first if off: the region key
-// of a /geo offroad.
-func withOffroad(off bool, rest string) string {
-	switch {
-	case !off:
-		return rest
-	case rest == "":
-		return offroad
-	}
-	return offroad + "," + rest
-}
-
 // in reports whether p is in region ("" is GEO_REGIONS, and empty too the
-// world), and off roads if region asks for that. s.mu is held.
+// world). s.mu is held.
 func (s *server) in(p kept, region string) bool {
-	off, region := splitOffroad(region)
-	if off && !p.Offroad {
-		return false
-	}
 	if region == "" {
 		region = s.cfg.Regions
 	}
@@ -282,8 +245,8 @@ func (s *server) in(p kept, region string) bool {
 	return err == nil && seeds.Has(p.Place.CountryCode)
 }
 
-// regionSeeds is the seeds for region, a /geo argument without the
-// offroad token, or an error if it names none.
+// regionSeeds is the seeds for region, a /geo argument, or an error if it
+// names none.
 func (s *server) regionSeeds(region string) (*geo.Seeds, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -312,50 +275,44 @@ func (s *server) wakeUp() {
 }
 
 // search is the real finder: Mapillary and Panoramax, checked by the geo
-// package, with places named by Nominatim and off-road spots told by
-// Overpass.
+// package, with places named by Nominatim.
 type search struct {
-	sources  []geo.Source
-	rules    geo.Rules
-	places   *geo.Nominatim
-	overpass *geo.Overpass
-	rand     *rand.Rand
-	used     func(key string) bool
-	log      *log.Logger
-	seeds    map[string]*geo.Seeds
-	regions  string // GEO_REGIONS
+	sources []geo.Source
+	rules   geo.Rules
+	places  *geo.Nominatim
+	rand    *rand.Rand
+	used    func(key string) bool
+	log     *log.Logger
+	seeds   map[string]*geo.Seeds
+	regions string // GEO_REGIONS
 }
 
-// seedsFor is whether regions asks for photos off roads, and the seeds of
-// the rest of it, or of GEO_REGIONS with none.
-func (f *search) seedsFor(regions string) (bool, *geo.Seeds, error) {
-	off, regions := splitOffroad(regions)
+// seedsFor is the seeds of regions, or of GEO_REGIONS with none.
+func (f *search) seedsFor(regions string) (*geo.Seeds, error) {
 	if regions == "" {
 		regions = f.regions
 	}
 	if seeds := f.seeds[regions]; seeds != nil {
-		return off, seeds, nil
+		return seeds, nil
 	}
 	seeds, err := geo.LoadSeeds(regions)
 	if err != nil {
-		return off, nil, err
+		return nil, err
 	}
 	f.seeds[regions] = seeds
-	return off, seeds, nil
+	return seeds, nil
 }
 
-// Find looks for one photo, off roads if regions has the offroad token.
-// It logs only counts of rejections, by reason, and errors, which hold no
-// URL.
+// Find looks for one photo. It logs only counts of rejections, by reason,
+// and errors, which hold no URL.
 func (f *search) Find(ctx context.Context, regions string) (geo.Photo, error) {
-	off, seeds, err := f.seedsFor(regions)
+	seeds, err := f.seedsFor(regions)
 	if err != nil {
 		return geo.Photo{}, err
 	}
 	rejected := map[string]int{}
 	finder := geo.Finder{
 		Sources: f.sources, Seeds: seeds, Rules: f.rules, Places: f.places, Rand: f.rand, Now: time.Now,
-		Offroad: off, Overpass: f.overpass,
 		Used:     f.used,
 		Rejected: func(source string, why geo.Reject) { rejected[source+": "+string(why)]++ },
 		Failed:   func(err error) { f.log.Printf("search failed: %v", err) },

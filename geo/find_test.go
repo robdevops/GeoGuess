@@ -6,8 +6,6 @@ import (
 	"math/rand/v2"
 	"net/http"
 	"slices"
-	"strconv"
-	"strings"
 	"testing"
 	"time"
 )
@@ -176,114 +174,5 @@ func TestFindErrors(t *testing.T) {
 	f, _, _ = newTestFinder(t, "Australia", &fakeSource{err: context.Canceled})
 	if _, err := f.Find(ctx); !errors.Is(err, context.Canceled) {
 		t.Errorf("cancelled: %v", err)
-	}
-}
-
-// An off-road search looks a box's candidates up in one Overpass query
-// before any download: one on a road is rejected and never downloaded, and
-// one on a path is the photo.
-func TestFindOffroad(t *testing.T) {
-	noon := time.Date(2024, 12, 21, 2, 19, 0, 0, time.UTC)
-	road, path, field := Point{-37.56, 143.85}, Point{-37.57, 143.86}, Point{-37.58, 143.87}
-	c := func(id string, at Point) Candidate {
-		return Candidate{ID: id, Source: "Fake", Sequence: id, At: at, Raw: at, Captured: noon, Quality: 0.9}
-	}
-	photo := jpegOf(t, scene(1024, 768, rand.New(rand.NewPCG(5, 5))))
-	src := &fakeSource{
-		cands:  []Candidate{c("road", road), c("path", path), c("field", field)},
-		photos: map[string][]byte{"road": photo, "path": photo, "field": photo},
-	}
-	f, rejects, fails := newTestFinder(t, "Australia", src)
-	api := newFakeAPI(t)
-	// A road through the first spot, and a footway through the second.
-	through := func(k, v string, p Point) osmElement {
-		return osmElement{Type: "way", Tags: map[string]string{k: v}, Geometry: []*osmPoint{{p.Lat - 0.001, p.Lon}, {p.Lat + 0.001, p.Lon}}}
-	}
-	// No spot is in an area: one count each.
-	api.handle = func(w http.ResponseWriter, r *http.Request) {
-		r.ParseForm()
-		areas := make([]int, strings.Count(r.PostForm.Get("data"), "is_in("))
-		w.Write(overpassAnswer(t, areas, through("highway", "residential", road), through("highway", "footway", path)))
-	}
-	f.Overpass = NewOverpass(api.URL, api.Client())
-	f.Overpass.pace.every = 0
-	f.Offroad = true
-	for range 5 {
-		*rejects, src.fetched, src.boxes = nil, nil, nil
-		before := len(api.requests())
-		p, err := f.Find(context.Background())
-		if err != nil || p.ID != "path" || !p.Offroad || p.Place.CountryCode != "AU" {
-			t.Fatalf("found %+v, offroad %v: %v", p.Candidate, p.Offroad, err)
-		}
-		if !slices.Equal(src.fetched, []string{"path"}) {
-			t.Fatalf("downloaded %v", src.fetched)
-		}
-		slices.Sort(*rejects)
-		if !slices.Equal(*rejects, []Reject{RejectNotOffroad, RejectRoad}) {
-			t.Errorf("rejected for %v", *rejects)
-		}
-		reqs := api.requests()[before:]
-		if len(reqs) != 1 || len(src.boxes) != 1 {
-			t.Fatalf("%d queries for %d boxes", len(reqs), len(src.boxes))
-		}
-		reqs[0].ParseForm()
-		q := reqs[0].PostForm.Get("data")
-		for _, p := range []Point{road, path, field} {
-			if !strings.Contains(q, "is_in("+coord(p.Lat)+","+coord(p.Lon)+")") {
-				t.Errorf("query lacks %v", p)
-			}
-		}
-	}
-
-	// Only roads: nothing is downloaded.
-	src.cands, src.fetched = []Candidate{c("road", road)}, nil
-	*fails = nil
-	if _, err := f.Find(context.Background()); err != ErrNotFound || len(src.fetched) != 0 || len(*fails) != 0 {
-		t.Errorf("roads only: %v, fetched %v, failed %v", err, src.fetched, *fails)
-	}
-
-	// A box's first 40 candidates (all of a Mapillary box's picks) are
-	// looked up in one query.
-	src.cands = nil
-	for i := range 45 {
-		src.cands = append(src.cands, c("field"+strconv.Itoa(i), Point{field.Lat - 0.001*float64(i), field.Lon}))
-	}
-	before := len(api.requests())
-	if _, err := f.Find(context.Background()); err != ErrNotFound {
-		t.Errorf("fields: %v", err)
-	}
-	reqs := api.requests()[before:]
-	if len(reqs) == 0 {
-		t.Error("fields: no query")
-	}
-	for _, r := range reqs {
-		r.ParseForm()
-		if n := strings.Count(r.PostForm.Get("data"), "is_in("); n != 40 {
-			t.Errorf("fields: %d spots in a query", n)
-		}
-	}
-
-	// Overpass rate-limiting the check stops the search at once.
-	src.cands, src.fetched = []Candidate{c("path", path), c("path2", path)}, nil
-	api.handle = func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusTooManyRequests) }
-	before = len(api.requests())
-	if _, err := f.Find(context.Background()); err != ErrOverpassBusy || len(api.requests())-before != 1 || len(src.fetched) != 0 {
-		t.Errorf("rate-limited: %v after %d requests, fetched %v", err, len(api.requests())-before, src.fetched)
-	}
-
-	// A failed query is reported, and the search goes on to the next box.
-	api.handle = func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusInternalServerError) }
-	*fails = nil
-	if _, err := f.Find(context.Background()); err != ErrNotFound || len(*fails) != seedsPerFind*boxesPerSeed || len(src.fetched) != 0 {
-		t.Errorf("failed queries: %v, %d reported, fetched %v", err, len(*fails), src.fetched)
-	}
-
-	// Without Offroad a photo is not marked off roads, and Overpass isn't
-	// asked.
-	f.Offroad = false
-	before = len(api.requests())
-	src.cands = []Candidate{c("path", path)}
-	if p, err := f.Find(context.Background()); err != nil || p.Offroad || len(api.requests()) != before {
-		t.Errorf("plain: %v, %v", p.Offroad, err)
 	}
 }

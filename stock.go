@@ -33,11 +33,10 @@ const photoDir = "photos"
 // Its metadata is saved in geo.json, its JPEG in photoDir, never in both.
 type kept struct {
 	geo.Candidate
-	Place   geo.Place `json:"place"`
-	Offroad bool      `json:"offroad,omitempty"`
-	For     string    `json:"for,omitempty"` // the region key it was searched for
-	Found   time.Time `json:"found"`
-	JPEG    []byte    `json:"-"`
+	Place geo.Place `json:"place"`
+	For   string    `json:"for,omitempty"` // the region key it was searched for
+	Found time.Time `json:"found"`
+	JPEG  []byte    `json:"-"`
 }
 
 // recentKey is a region key a game used, and when it last did: kept
@@ -228,19 +227,9 @@ func (s *server) surplus(key string) bool {
 	return s.stocked(key) > s.want(key)
 }
 
-// otherMode reports whether k was found off roads for a key, and a game in
-// region doesn't ask for that: off-road photos are slow to find, so such a
-// game takes one only if the stock can spare it.
-func otherMode(k kept, region string) bool {
-	keyOff, _ := splitOffroad(k.For)
-	off, _ := splitOffroad(region)
-	return keyOff && !off
-}
-
 // pick is the index in the stock of the photo a game in region takes
 // next, or -1: the oldest found for region, else the oldest whose key can
-// spare it, else the oldest in region, never an off-road photo the stock
-// can't spare for a game that doesn't ask for one. s.mu is held.
+// spare it, else the oldest in region. s.mu is held.
 func (s *server) pick(region string) int {
 	best, rank := -1, 3
 	for i, k := range s.stock {
@@ -253,8 +242,6 @@ func (s *server) pick(region string) int {
 			r = 0
 		case s.surplus(k.For):
 			r = 1
-		case otherMode(k, region):
-			continue
 		}
 		if r < rank {
 			best, rank = i, r

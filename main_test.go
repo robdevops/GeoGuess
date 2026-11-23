@@ -104,15 +104,14 @@ func (b *syncBuffer) String() string {
 }
 
 // fakeFinder finds a photo at once, or never if off: in Ballarat, or in
-// Paris for Europe, or with elsewhere for anywhere but AU; off roads when
-// regions has the offroad token. It keeps the regions it was asked for.
+// Paris for Europe, or with elsewhere for anywhere but AU. It keeps the
+// regions it was asked for.
 type fakeFinder struct {
 	mu        sync.Mutex
 	n         int
 	off       bool
 	elsewhere bool
 	asked     []string
-	offroad   []string // the links of the photos found off roads
 }
 
 func (f *fakeFinder) Find(ctx context.Context, regions string) (geo.Photo, error) {
@@ -132,12 +131,6 @@ func (f *fakeFinder) Find(ctx context.Context, regions string) (geo.Photo, error
 		},
 		Place: geo.Place{Name: "Ballarat, Victoria, Australia", Country: "Australia", CountryCode: "AU"},
 		JPEG:  []byte("jpeg " + strconv.Itoa(n)),
-	}
-	p.Offroad, regions = splitOffroad(regions)
-	if p.Offroad {
-		f.mu.Lock()
-		f.offroad = append(f.offroad, p.Link)
-		f.mu.Unlock()
 	}
 	if strings.Contains(strings.ToLower(regions), "europe") || elsewhere && regions != "AU" {
 		p.At, p.Place = paris, geo.Place{Name: "Paris, Île-de-France, France", Country: "France", CountryCode: "FR"}
@@ -808,7 +801,7 @@ func TestConfig(t *testing.T) {
 	env := func(m map[string]string) func(string) string { return func(k string) string { return m[k] } }
 	c, err := loadConfig(env(map[string]string{"GEO_STATE_DIR": "/x"}))
 	if err != nil || c.Round != 3*time.Minute || c.MemLimit != 200<<20 || c.Buffer != 4 || c.MinQuality != 0.5 || c.Keep != nil || c.grace != startGrace || c.gap != gapTime ||
-		c.Nominatim != geo.NominatimURL || c.Overpass != geo.OverpassURL || c.Panoramax != geo.PanoramaxURL || c.Mapillary != geo.MapillaryURL || c.MaxAge < 10*365*24*time.Hour {
+		c.Nominatim != geo.NominatimURL || c.Panoramax != geo.PanoramaxURL || c.Mapillary != geo.MapillaryURL || c.MaxAge < 10*365*24*time.Hour {
 		t.Errorf("defaults %+v, %v", c, err)
 	}
 	c, err = loadConfig(env(map[string]string{"GEO_STATE_DIR": "/x", "GEO_ROUND": "90s", "GEO_MEMLIMIT": "1GiB", "GEO_REGIONS": "europe", "GEO_BUFFER": "5",
@@ -818,10 +811,10 @@ func TestConfig(t *testing.T) {
 		t.Errorf("set %+v, %v", c, err)
 	}
 	_, err = loadConfig(env(map[string]string{"GEO_ROUND": "1h", "GEO_MEMLIMIT": "lots", "GEO_REGIONS": "atlantis", "GEO_BUFFER": "0", "GEO_KEEP": "AU,atlantis",
-		"GEO_MIN_QUALITY": "2", "GEO_MAX_AGE_YEARS": "-1", "GEO_NOMINATIM_URL": "http://x", "GEO_OVERPASS_URL": "http://x",
+		"GEO_MIN_QUALITY": "2", "GEO_MAX_AGE_YEARS": "-1", "GEO_NOMINATIM_URL": "http://x",
 		"GEO_PANORAMAX_URL": "ftp://x", "GEO_MAPILLARY_URL": "graph.example"}))
 	for _, name := range []string{"GEO_STATE_DIR", "GEO_ROUND", "GEO_MEMLIMIT", "GEO_REGIONS", "GEO_BUFFER", "GEO_KEEP", "GEO_MIN_QUALITY", "GEO_MAX_AGE_YEARS",
-		"GEO_NOMINATIM_URL", "GEO_OVERPASS_URL", "GEO_PANORAMAX_URL", "GEO_MAPILLARY_URL"} {
+		"GEO_NOMINATIM_URL", "GEO_PANORAMAX_URL", "GEO_MAPILLARY_URL"} {
 		if err == nil || !strings.Contains(err.Error(), name) {
 			t.Errorf("no error for %s: %v", name, err)
 		}
@@ -1019,22 +1012,23 @@ func TestKeepFailing(t *testing.T) {
 	photos.mu.Unlock()
 }
 
-// Overpass being busy for a kept off-road region slows down only that
-// region: the buffer still fills at once, without the global wait.
-func TestKeepOverpassBusy(t *testing.T) {
+// A source asking to slow down holds up every search, not just its
+// region's, for the wait.
+func TestKeepSlowDown(t *testing.T) {
 	clk := &fakeClock{now: time.Date(2026, 11, 20, 14, 0, 0, 0, time.UTC)}
-	photos := failIn{&fakeFinder{}, "offroad", geo.ErrOverpassBusy}
-	s := testServer(t, t.TempDir(), clk, photos, io.Discard, "GEO_KEEP", "offroad")
+	photos := failIn{&fakeFinder{elsewhere: true}, "AU", geo.ErrSlowDown}
+	s := testServer(t, t.TempDir(), clk, photos, io.Discard, "GEO_KEEP", "AU")
 	connect(t, s)
-	waitFor(t, s, "a full stock", func() bool { return len(s.stock) == s.cfg.Buffer })
+	waitFor(t, s, "a slow-down", func() bool { return s.retries["AU"].slow })
+	time.Sleep(300 * time.Millisecond) // for any other search
 	s.mu.Lock()
-	r := s.retries["offroad"]
+	r, stocked := s.retries["AU"], len(s.stock)
 	s.mu.Unlock()
-	if r.failures != 1 {
-		t.Errorf("retry %+v", r)
+	if r.failures != 1 || stocked != 0 {
+		t.Errorf("retry %+v, %d stocked", r, stocked)
 	}
 	photos.mu.Lock()
-	if asked := photos.asked; !slices.Equal(asked, []string{"offroad", "", ""}) {
+	if asked := photos.asked; !slices.Equal(asked, []string{"AU"}) {
 		t.Errorf("searched %q", asked)
 	}
 	photos.mu.Unlock()
@@ -1401,219 +1395,18 @@ func TestDMEndsEarly(t *testing.T) {
 	waitFor(t, c.s, "round 2", func() bool { r := c.s.rounds["c_dm"]; return r != nil && r.Number == 2 })
 }
 
-// splitOffroad finds the offroad token in any case and place, and
-// withOffroad puts it first.
-func TestSplitOffroad(t *testing.T) {
-	for _, tc := range []struct {
-		in, rest, key string
-		off           bool
-	}{
-		{"", "", "", false},
-		{"europe", "europe", "europe", false},
-		{"offroad", "", "offroad", true},
-		{"OffRoad", "", "offroad", true},
-		{"europe,offroad", "europe", "offroad,europe", true},
-		{"AU, OFFROAD ,NZ", "AU,NZ", "offroad,AU,NZ", true},
-		{"offroads", "offroads", "offroads", false},
-	} {
-		off, rest := splitOffroad(tc.in)
-		if off != tc.off || rest != tc.rest || withOffroad(off, rest) != tc.key {
-			t.Errorf("%q: %v, %q, %q", tc.in, off, rest, withOffroad(off, rest))
-		}
-	}
-}
-
-// /geo offroad combines with a length and regions in any order, and keys
-// the game's region with the token first.
-func TestOffroadArgs(t *testing.T) {
-	clk, c, _ := start(t)
-	for _, tc := range []struct{ args, region, length string }{
-		{"offroad", "offroad", "(3 min)"},
-		{"OFFROAD 5m", "offroad", "(5 min)"},
-		{"europe offroad", "offroad,europe", "(3 min)"},
-		{"offroad AU,NZ 90s", "offroad,AU,NZ", "(90 sec)"},
-		{"90s AU,offroad", "offroad,AU", "(90 sec)"},
-	} {
-		r := c.geo(tc.args, from(clk, chat, alice))
-		if r.Meta == nil || !strings.Contains(words(r), tc.length) {
-			t.Fatalf("/geo %s: %q", tc.args, words(r))
-		}
-		c.s.mu.Lock()
-		region := c.s.rounds[chat].Region
-		c.s.mu.Unlock()
-		if region != tc.region {
-			t.Errorf("/geo %s: region %q", tc.args, region)
-		}
-		c.geo("end", from(clk, chat, alice))
-	}
-	if got := words(c.geo("offroad atlantis", from(clk, chat, alice))); !strings.HasPrefix(got, "I don't know that region.") || !strings.Contains(got, "/geo offroad") {
-		t.Errorf("an unknown region: %q", got)
-	}
-	if got := lobbyIntro(&round{Region: "offroad,europe", Of: 3, Length: time.Minute}); !strings.HasPrefix(got, "🌍 **GeoGuess** · off-road · 3 rounds of 1 min:") {
-		t.Errorf("intro %q", got)
-	}
-	if got := lobbyIntro(&round{Of: 3, Length: time.Minute}); strings.Contains(got, "off-road") {
-		t.Errorf("intro %q", got)
-	}
-}
-
-// in and match take only off-road photos for a region with the token, and
-// any photo for one without.
-func TestInOffroad(t *testing.T) {
-	clk := &fakeClock{now: time.Date(2026, 11, 20, 14, 0, 0, 0, time.UTC)}
-	s := testServer(t, t.TempDir(), clk, &fakeFinder{}, io.Discard)
-	au := geo.Place{CountryCode: "AU"}
-	plain := kept{Candidate: geo.Candidate{ID: "1"}, Place: au}
-	off := kept{Candidate: geo.Candidate{ID: "2"}, Place: au, Offroad: true}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	for _, tc := range []struct {
-		p      kept
-		region string
-		want   bool
-	}{
-		{plain, "", true}, {off, "", true}, {plain, "AU", true}, {off, "AU", true},
-		{plain, "offroad", false}, {off, "offroad", true},
-		{plain, "offroad,AU", false}, {off, "offroad,AU", true}, {off, "offroad,europe", false},
-	} {
-		if got := s.in(tc.p, tc.region); got != tc.want {
-			t.Errorf("photo %s in %q: %v", tc.p.ID, tc.region, got)
-		}
-	}
-	s.stock = []kept{plain, off}
-	if s.pick("") != 0 || s.pick("offroad") != 1 || s.pick("offroad,AU") != 1 || s.pick("offroad,europe") != -1 {
-		t.Errorf("pick %d, %d", s.pick(""), s.pick("offroad"))
-	}
-}
-
-// Every round of a /geo offroad game takes an off-road photo, though
-// others are ready.
-func TestOffroadGame(t *testing.T) {
-	clk := &fakeClock{now: time.Date(2026, 11, 20, 14, 0, 0, 0, time.UTC)}
-	photos := &fakeFinder{}
-	c := connect(t, testServer(t, t.TempDir(), clk, photos, io.Discard))
-	c.games(3)
-	waitFor(t, c.s, "a full stock", func() bool { return len(c.s.stock) == c.s.cfg.Buffer })
-	if r := c.geo("offroad 1m", from(clk, chat, alice)); r.Meta == nil {
-		t.Fatalf("/geo offroad: %q", words(r))
-	}
-	var links []string
-	link := func() {
-		c.s.mu.Lock()
-		links = append(links, c.s.rounds[chat].Credit.Link)
-		c.s.mu.Unlock()
-	}
-	link()
-	c.guess("-37.6, 143.9", from(clk, chat, alice))
-	c.guess("-37.6, 143.95", from(clk, chat, bob))
-	clk.Advance(time.Minute + settle)
-	for n := 2; n <= 3; n++ {
-		waitFor(t, c.s, fmt.Sprintf("round %d", n), func() bool { r := c.s.rounds[chat]; return r != nil && r.Number == n && !r.Waiting })
-		c.s.mu.Lock()
-		region := c.s.rounds[chat].Region
-		c.s.mu.Unlock()
-		if region != "offroad" {
-			t.Errorf("round %d in %q", n, region)
-		}
-		link()
-		c.guess("-37.6, 143.9", from(clk, chat, alice))
-		c.guess("-37.6, 143.95", from(clk, chat, bob))
-		clk.Advance(settle)
-	}
-	photos.mu.Lock()
-	defer photos.mu.Unlock()
-	for i, l := range links {
-		if !slices.Contains(photos.offroad, l) {
-			t.Errorf("round %d's photo isn't off roads", i+1)
-		}
-	}
-}
-
-// GEO_KEEP=offroad keeps an off-road photo ready, which a plain /geo
-// leaves when another can serve it; GEO_REGIONS takes no offroad.
-func TestKeepOffroad(t *testing.T) {
-	env := func(m map[string]string) func(string) string { return func(k string) string { return m[k] } }
-	cfg, err := loadConfig(env(map[string]string{"GEO_STATE_DIR": "/x", "GEO_KEEP": "OffRoad, offroad AU,NZ"}))
-	if err != nil || !slices.Equal(cfg.Keep, []string{"offroad", "offroad,AU", "NZ"}) {
-		t.Errorf("GEO_KEEP %q, %v", cfg.Keep, err)
-	}
-	if _, err := loadConfig(env(map[string]string{"GEO_STATE_DIR": "/x", "GEO_KEEP": "offroad atlantis"})); err == nil || !strings.Contains(err.Error(), "GEO_KEEP") {
-		t.Errorf("GEO_KEEP offroad atlantis: %v", err)
-	}
-	if _, err := loadConfig(env(map[string]string{"GEO_STATE_DIR": "/x", "GEO_REGIONS": "europe,offroad"})); err == nil || !strings.Contains(err.Error(), "GEO_REGIONS: offroad is a kind of game") {
-		t.Errorf("GEO_REGIONS offroad: %v", err)
-	}
-
-	clk := &fakeClock{now: time.Date(2026, 11, 20, 14, 0, 0, 0, time.UTC)}
-	photos := &fakeFinder{}
-	s := testServer(t, t.TempDir(), clk, photos, io.Discard, "GEO_KEEP", "offroad")
-	c := connect(t, s)
-	waitFor(t, s, "an off-road photo and a full stock", func() bool { return s.count("offroad") == 1 && len(s.stock) >= s.cfg.Buffer })
-	photos.mu.Lock()
-	if photos.asked[0] != "offroad" {
-		t.Errorf("searched %q first", photos.asked)
-	}
-	photos.mu.Unlock()
-	if r := c.geo("", from(clk, chat, alice)); r.Meta == nil {
-		t.Fatalf("/geo: %q", words(r))
-	}
-	s.mu.Lock()
-	link, off := s.rounds[chat].Credit.Link, s.count("offroad")
-	s.mu.Unlock()
-	photos.mu.Lock()
-	used := slices.Contains(photos.offroad, link)
-	photos.mu.Unlock()
-	if used || off != 1 {
-		t.Errorf("a plain /geo took the off-road photo (%v), leaving %d", used, off)
-	}
-}
-
-// The real finder searches the regions without the offroad token, off
-// roads when it is there, and in GEO_REGIONS when it is all there is.
+// The real finder searches the regions it is asked for, or GEO_REGIONS
+// with none.
 func TestSearchSeeds(t *testing.T) {
 	f := &search{seeds: map[string]*geo.Seeds{}, regions: "NZ"}
-	for _, tc := range []struct {
-		regions string
-		off     bool
-		cc      string
-	}{
-		{"offroad,AU", true, "AU"}, {"offroad", true, "NZ"}, {"AU", false, "AU"}, {"", false, "NZ"},
-	} {
-		off, seeds, err := f.seedsFor(tc.regions)
-		if err != nil || off != tc.off || !seeds.Has(tc.cc) || seeds.Has("FR") {
-			t.Errorf("%q: off %v, %v", tc.regions, off, err)
+	for _, tc := range []struct{ regions, cc string }{{"AU", "AU"}, {"", "NZ"}} {
+		seeds, err := f.seedsFor(tc.regions)
+		if err != nil || !seeds.Has(tc.cc) || seeds.Has("FR") {
+			t.Errorf("%q: %v", tc.regions, err)
 		}
 	}
-	if _, seeds, _ := f.seedsFor("offroad,AU"); seeds.Has("NZ") {
-		t.Error("offroad,AU has seeds in NZ")
-	}
-}
-
-// A /geo offroad with no off-road photo in time says it is fetching one,
-// and another /geo meanwhile that the photo is on its way; GEO_KEEP takes
-// spaces only with offroad.
-func TestOffroadNoPhoto(t *testing.T) {
-	clk := &fakeClock{now: time.Date(2026, 11, 20, 14, 0, 0, 0, time.UTC)}
-	s := testServer(t, t.TempDir(), clk, &fakeFinder{off: true}, io.Discard)
-	s.cfg.grace = 50 * time.Millisecond
-	c := connect(t, s)
-	if got := words(c.geo("offroad", from(clk, chat, alice))); got != "🔎 Fetching an off-road spot…" {
-		t.Errorf("/geo offroad: %q", got)
-	}
-	if got := words(c.geo("", from(clk, chat, bob))); got != "A game is on: round 1's photo is on its way." {
-		t.Errorf("/geo: %q", got)
-	}
-	if got := words(c.geo("", from(clk, "c_two", bob))); got != "🔎 Fetching a spot…" {
-		t.Errorf("/geo elsewhere: %q", got)
-	}
-	for _, g := range []struct{ chat, user string }{{chat, alice}, {"c_two", bob}} {
-		if got := words(c.geo("end", from(clk, g.chat, g.user))); got != "The game is off." {
-			t.Errorf("/geo end in %s: %q", g.chat, got)
-		}
-	}
-	env := map[string]string{"GEO_STATE_DIR": "/x", "GEO_KEEP": "AU NZ"}
-	if _, err := loadConfig(func(k string) string { return env[k] }); err == nil || !strings.Contains(err.Error(), "GEO_KEEP") {
-		t.Errorf("GEO_KEEP AU NZ: %v", err)
+	if seeds, _ := f.seedsFor("AU"); seeds.Has("NZ") {
+		t.Error("AU has seeds in NZ")
 	}
 }
 
@@ -1937,13 +1730,13 @@ func TestFetchGiveUp(t *testing.T) {
 	}
 
 	c = fetchClient(t, t.TempDir(), clk, &fakeFinder{off: true}, 3, false)
-	r = c.geo("offroad 1m", dmFrom(clk, "c_dm", alice))
-	if words(r) != "🔎 Fetching off-road spots for 3 rounds…" || r.Meta == nil {
+	r = c.geo("1m", dmFrom(clk, "c_dm", alice))
+	if words(r) != "🔎 Fetching spots for 3 rounds…" || r.Meta == nil {
 		t.Fatalf("/geo %+v", r)
 	}
 	clk.Advance(fetchMax)
 	page = c.outbox("0")
-	if len(page.Ops) != 2 || page.Ops[0].Text != "I couldn't find an off-road spot, so the game is off." ||
+	if len(page.Ops) != 2 || page.Ops[0].Text != "I couldn't find a spot, so the game is off." ||
 		page.Ops[1].Op != "unwatch" || page.Ops[1].Watch != r.Meta.Watch.ID {
 		t.Fatalf("the call-off %+v", page)
 	}
@@ -2071,7 +1864,7 @@ func TestStockOld(t *testing.T) {
 	}
 }
 
-// An off-road game keeps "offroad" stocked with a full game, remembered
+// A game in Europe keeps "europe" stocked with a full game, remembered
 // across a restart, after which the prefetcher fills it unasked.
 func TestAutoKeep(t *testing.T) {
 	clk := &fakeClock{now: time.Date(2026, 11, 20, 14, 0, 0, 0, time.UTC)}
@@ -2079,15 +1872,15 @@ func TestAutoKeep(t *testing.T) {
 	photos := &fakeFinder{}
 	s := testServer(t, dir, clk, &fakeFinder{off: true}, io.Discard) // no refill before the restart
 	s.perGame = 3
-	stockUp(s, photos, "offroad", need(3))
+	stockUp(s, photos, "europe", need(3))
 	c := connect(t, s)
-	if r := c.geo("offroad 1m", dmFrom(clk, "c_dm", alice)); len(r.Content) != 2 {
-		t.Fatalf("/geo offroad %q", words(r))
+	if r := c.geo("europe 1m", dmFrom(clk, "c_dm", alice)); len(r.Content) != 2 {
+		t.Fatalf("/geo europe %q", words(r))
 	}
 	s.mu.Lock()
 	recent := slices.Clone(s.recent)
 	s.mu.Unlock()
-	if len(recent) != 1 || recent[0].Key != "offroad" {
+	if len(recent) != 1 || recent[0].Key != "europe" {
 		t.Errorf("recent %+v", recent)
 	}
 	c.close()
@@ -2096,11 +1889,11 @@ func TestAutoKeep(t *testing.T) {
 	s = testServer(t, dir, clk, photos, io.Discard)
 	s.perGame = 3
 	connect(t, s)
-	waitFor(t, s, "a full game off roads", func() bool { return s.stocked("offroad") == need(3) && s.count("offroad") == need(3) })
+	waitFor(t, s, "a full game in Europe", func() bool { return s.stocked("europe") == need(3) && s.count("europe") == need(3) })
 	photos.mu.Lock()
 	defer photos.mu.Unlock()
-	if n := len(photos.offroad); n != need(3) {
-		t.Errorf("%d off-road searches", n)
+	if n := len(slices.DeleteFunc(slices.Clone(photos.asked), func(r string) bool { return r != "europe" })); n != need(3) {
+		t.Errorf("%d searches in Europe", n)
 	}
 }
 
@@ -2109,13 +1902,13 @@ func TestAutoKeep(t *testing.T) {
 // the auto-kept keys are bounded.
 func TestSearchOrder(t *testing.T) {
 	clk := &fakeClock{now: time.Date(2026, 11, 20, 14, 0, 0, 0, time.UTC)}
-	s := testServer(t, t.TempDir(), clk, &fakeFinder{}, io.Discard, "GEO_KEEP", "offroad")
+	s := testServer(t, t.TempDir(), clk, &fakeFinder{}, io.Discard, "GEO_KEEP", "oceania")
 	now := time.Now()
 	s.mu.Lock()
-	for _, key := range []string{"AU", "NZ", "europe", "asia", "africa", "offroad,AU", "offroad,NZ", "OFFROAD"} {
+	for _, key := range []string{"AU", "NZ", "europe", "asia", "africa", "FR", "JP", "OCEANIA"} {
 		s.noteKey(key, clk.Now())
 	}
-	if len(s.recent) != maxRecent || s.recent[0].Key != "offroad,NZ" {
+	if len(s.recent) != maxRecent || s.recent[0].Key != "JP" {
 		t.Errorf("recent %+v", s.recent)
 	}
 	s.rounds[chat] = &round{Chat: chat, Region: "africa", Of: 1, GiveUp: clk.Now().Add(fetchMax)}
@@ -2133,7 +1926,7 @@ func TestSearchOrder(t *testing.T) {
 			s.mu.Unlock()
 		}
 	}
-	if !slices.Equal(order, []string{"africa", "offroad", "offroad,NZ", "offroad,AU"}) {
+	if !slices.Equal(order, []string{"africa", "oceania", "JP", "FR"}) {
 		t.Errorf("searched %q", order)
 	}
 	s.mu.Lock()
@@ -2186,53 +1979,36 @@ func TestFetchRestart(t *testing.T) {
 
 	dir = t.TempDir()
 	c = fetchClient(t, dir, clk, &fakeFinder{off: true}, 1, true)
-	if r := c.geo("offroad 1m", from(clk, chat, alice)); r.Meta == nil || !r.Meta.Watch.Reactions {
-		t.Fatalf("/geo offroad: %q", words(r))
+	if r := c.geo("europe 1m", from(clk, chat, alice)); r.Meta == nil || !r.Meta.Watch.Reactions {
+		t.Fatalf("/geo europe: %q", words(r))
 	}
 	c.close()
 	s := testServer(t, dir, clk, &fakeFinder{off: true}, io.Discard)
 	s.mu.Lock()
 	lobby := s.rounds[chat] != nil && s.rounds[chat].Lobby
 	s.mu.Unlock()
-	if key, ok, _ := s.nextSearch(time.Now()); !lobby || !ok || key != "offroad" {
+	if key, ok, _ := s.nextSearch(time.Now()); !lobby || !ok || key != "europe" {
 		t.Errorf("after a restart: lobby %v, searching %q", lobby, key)
 	}
-}
-
-// noOffroad is the fake finder, failing at once off roads, counting the
-// tries.
-type noOffroad struct {
-	*fakeFinder
-	tries *int
-}
-
-func (f noOffroad) Find(ctx context.Context, regions string) (geo.Photo, error) {
-	if off, _ := splitOffroad(regions); off {
-		f.mu.Lock()
-		*f.tries++
-		f.mu.Unlock()
-		return geo.Photo{}, geo.ErrNotFound
-	}
-	return f.fakeFinder.Find(ctx, regions)
 }
 
 // A game gathering photos where searches fail leaves them to the key's
 // backoff, rather than searching again at once.
 func TestFetchBackoff(t *testing.T) {
 	clk := &fakeClock{now: time.Date(2026, 11, 20, 14, 0, 0, 0, time.UTC)}
-	photos := noOffroad{&fakeFinder{}, new(int)}
-	s := testServer(t, t.TempDir(), clk, photos, io.Discard, "GEO_KEEP", "offroad")
+	photos := failIn{&fakeFinder{elsewhere: true}, "AU", geo.ErrNotFound}
+	s := testServer(t, t.TempDir(), clk, photos, io.Discard, "GEO_KEEP", "AU")
 	s.cfg.grace = 50 * time.Millisecond
 	c := connect(t, s)
-	if got := words(c.geo("offroad 1m", dmFrom(clk, "c_dm", alice))); got != "🔎 Fetching an off-road spot…" {
-		t.Fatalf("/geo offroad: %q", got)
+	if got := words(c.geo("AU 1m", dmFrom(clk, "c_dm", alice))); got != "🔎 Fetching a spot…" {
+		t.Fatalf("/geo AU: %q", got)
 	}
 	time.Sleep(300 * time.Millisecond)
 	photos.mu.Lock()
-	tries := *photos.tries
+	tries := len(slices.DeleteFunc(slices.Clone(photos.asked), func(r string) bool { return r != "AU" }))
 	photos.mu.Unlock()
 	if tries > 5 {
-		t.Errorf("searched off roads %d times without a pause", tries)
+		t.Errorf("searched in AU %d times without a pause", tries)
 	}
 	if got := words(c.geo("end", dmFrom(clk, "c_dm", alice))); got != "The game is off." {
 		t.Errorf("/geo end: %q", got)
@@ -2267,9 +2043,8 @@ func TestFetchTexts(t *testing.T) {
 	for _, tc := range []struct {
 		got, want string
 	}{
-		{fetching("", 3), "🔎 Fetching spots for 3 rounds…"},
-		{fetching("offroad,AU", 3), "🔎 Fetching off-road spots for 3 rounds…"},
-		{fetching("offroad", 1), "🔎 Fetching an off-road spot…"},
+		{fetching(3), "🔎 Fetching spots for 3 rounds…"},
+		{fetching(1), "🔎 Fetching a spot…"},
 		{stillFetching(2, 3), "🔎 Still fetching: 2 of 3 spots ready…"},
 		{shortGame(1), "Only found 1 spot, so this game is 1 round."},
 		{fileName("Panoramax:ab/../c d"), "Panoramax_ab____c_d-" + fmt.Sprintf("%08x", fnvOf("Panoramax:ab/../c d")) + ".jpg"},
@@ -2307,7 +2082,7 @@ func TestCapSurplus(t *testing.T) {
 	stockUp(s, photos, "AU", maxHeld)
 	s.mu.Lock()
 	s.recent = nil // AU is no longer kept: its photos are surplus
-	s.noteKey("offroad", clk.Now())
+	s.noteKey("europe", clk.Now())
 	s.mu.Unlock()
 	for range 10 {
 		key, ok, _ := s.nextSearch(time.Now())
@@ -2318,34 +2093,8 @@ func TestCapSurplus(t *testing.T) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if off, plain, au, held := s.stocked("offroad"), s.stocked(""), s.stocked("AU"), s.held(); off != need(3) || plain != s.cfg.Buffer || au != maxHeld-need(3)-s.cfg.Buffer || held != maxHeld {
-		t.Errorf("%d off roads, %d plain, %d in AU, %d in all", off, plain, au, held)
-	}
-}
-
-// A game not asking for off-road photos takes one only if the stock can
-// spare it.
-func TestPickOffroad(t *testing.T) {
-	clk := &fakeClock{now: time.Date(2026, 11, 20, 14, 0, 0, 0, time.UTC)}
-	photos := &fakeFinder{}
-	s := testServer(t, t.TempDir(), clk, photos, io.Discard)
-	s.perGame = 3
-	s.mu.Lock()
-	s.noteKey("offroad", clk.Now())
-	s.mu.Unlock()
-	stockUp(s, photos, "offroad", need(3))
-	stockUp(s, photos, "", 1)
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	r := &round{Of: 3}
-	s.reserveLocked(r)
-	if len(r.Photos) != 1 || r.Photos[0].Offroad {
-		t.Errorf("a plain game took %d photos", len(r.Photos))
-	}
-	s.stock = append(s.stock, kept{Candidate: geo.Candidate{ID: "x", Source: "Mapillary"}, Offroad: true, For: "offroad", Place: geo.Place{CountryCode: "AU"}})
-	s.reserveLocked(r)
-	if len(r.Photos) != 2 || s.stocked("offroad") != need(3) {
-		t.Errorf("with one to spare: %d photos, %d off roads left", len(r.Photos), s.stocked("offroad"))
+	if eu, plain, au, held := s.stocked("europe"), s.stocked(""), s.stocked("AU"), s.held(); eu != need(3) || plain != s.cfg.Buffer || au != maxHeld-need(3)-s.cfg.Buffer || held != maxHeld {
+		t.Errorf("%d in Europe, %d plain, %d in AU, %d in all", eu, plain, au, held)
 	}
 }
 
@@ -2354,12 +2103,12 @@ func TestPickOffroad(t *testing.T) {
 func TestRestockGatherer(t *testing.T) {
 	clk := &fakeClock{now: time.Date(2026, 11, 20, 14, 0, 0, 0, time.UTC)}
 	c := fetchClient(t, t.TempDir(), clk, &fakeFinder{off: true}, 3, false)
-	stockUp(c.s, &fakeFinder{}, "offroad", need(3))
-	if r := c.geo("offroad 1m", dmFrom(clk, "c_b", alice)); len(r.Content) != 2 {
-		t.Fatalf("/geo offroad %q", words(r))
+	stockUp(c.s, &fakeFinder{}, "europe", need(3))
+	if r := c.geo("europe 1m", dmFrom(clk, "c_b", alice)); len(r.Content) != 2 {
+		t.Fatalf("/geo europe %q", words(r))
 	}
-	if got := words(c.geo("offroad 1m", dmFrom(clk, "c_a", bob))); got != "🔎 Fetching off-road spots for 3 rounds…" {
-		t.Fatalf("/geo offroad %q", got)
+	if got := words(c.geo("europe 1m", dmFrom(clk, "c_a", bob))); got != "🔎 Fetching spots for 3 rounds…" {
+		t.Fatalf("/geo europe %q", got)
 	}
 	c.geo("end", dmFrom(clk, "c_b", alice))
 	opened(t, c.s, "c_a", 1)
