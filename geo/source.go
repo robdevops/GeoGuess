@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -76,6 +78,11 @@ func (e StatusError) Error() string { return e.Source + ": status " + strconv.It
 // wait a while before searching again.
 var ErrSlowDown = errors.New("rate limited")
 
+// ErrOverpassBusy is Overpass asking to be called less often. It is an
+// ErrSlowDown, but only off-road searches need Overpass, so a caller may
+// slow down only those.
+var ErrOverpassBusy = fmt.Errorf("Overpass busy: %w", ErrSlowDown)
+
 // maxPhoto caps a downloaded photo.
 const maxPhoto = 12 << 20
 
@@ -109,21 +116,29 @@ func (p *pacer) wait(ctx context.Context) error {
 	}
 }
 
-// request is one GET to an API or an image host.
+// request is one GET to an API or an image host, or a POST of a form.
 type request struct {
 	client *http.Client
 	source string // names the source in errors
 	url    string
-	auth   string // the Authorization header, if any
-	limit  int64  // the most bytes read
+	auth   string     // the Authorization header, if any
+	form   url.Values // if set, POSTed as the body
+	limit  int64      // the most bytes read
 }
 
 // get does r and returns the body. An error never holds the URL, which may
 // carry a signature, nor the server's address.
 func (r request) get(ctx context.Context) ([]byte, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, r.url, nil)
+	method, body := http.MethodGet, io.Reader(nil)
+	if r.form != nil {
+		method, body = http.MethodPost, strings.NewReader(r.form.Encode())
+	}
+	req, err := http.NewRequestWithContext(ctx, method, r.url, body)
 	if err != nil {
 		return nil, fmt.Errorf("%s: bad request", r.source)
+	}
+	if r.form != nil {
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	}
 	req.Header.Set("User-Agent", userAgent)
 	if r.auth != "" {
@@ -137,17 +152,17 @@ func (r request) get(ctx context.Context) ([]byte, error) {
 		return nil, fmt.Errorf("%s: request failed", r.source)
 	}
 	defer resp.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(resp.Body, r.limit+1))
+	answer, err := io.ReadAll(io.LimitReader(resp.Body, r.limit+1))
 	if resp.StatusCode != http.StatusOK {
-		return body, StatusError{Source: r.source, Code: resp.StatusCode}
+		return answer, StatusError{Source: r.source, Code: resp.StatusCode}
 	}
 	if err != nil {
 		return nil, fmt.Errorf("%s: reading the answer failed", r.source)
 	}
-	if int64(len(body)) > r.limit {
+	if int64(len(answer)) > r.limit {
 		return nil, fmt.Errorf("%s: answer too large", r.source)
 	}
-	return body, nil
+	return answer, nil
 }
 
 // getJSON does r and decodes its JSON body into v.

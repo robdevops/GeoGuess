@@ -25,7 +25,7 @@ func fixture(t *testing.T, name, base string) []byte {
 }
 
 // fakeAPI is an httptest server whose handler the test sets, recording each
-// request it gets.
+// request it gets, with its form parsed.
 type fakeAPI struct {
 	*httptest.Server
 	mu      sync.Mutex
@@ -36,6 +36,7 @@ type fakeAPI struct {
 func newFakeAPI(t *testing.T) *fakeAPI {
 	f := &fakeAPI{}
 	f.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		r.ParseForm() // keeps a POSTed form for the test to read
 		f.mu.Lock()
 		f.queries = append(f.queries, r.Clone(context.Background()))
 		h := f.handle

@@ -40,6 +40,21 @@ when the lobby ended), the bot posts "I couldn't find a spot, so the game
 is off." ("an off-road spot" for `/geo offroad`) and the game ends. A restart carries on waiting, to the same
 limit.
 
+A later round's photo usually comes from the buffer, and for a region or
+`/geo offroad` it is looked for while the round before is played. If it
+isn't there about 3 seconds after the 5-second pause that follows the
+results, the bot posts "🔎 Fetching round 2's spot…" ("🔎 Fetching an
+off-road spot for round 2…" for `/geo offroad`) and keeps waiting.
+Meanwhile `/geo` and `/geo skip` say the photo is on its way, and the
+starter's `/geo end` ends the game with the totals so far. A game has 5
+minutes of fetching in all, round 1's and later rounds' together: once a
+fetch has used up what earlier ones left, the bot posts "I couldn't find
+a spot for round 2, so the game ends here." with the totals so far (at
+once, without "Fetching", if under 3 seconds are left). A tie-breaker is
+called "the tie-breaker" in these posts. A restart carries on waiting, to
+the same limit. (`GEO_WAIT`, which once set how long a later round
+waited, is no longer used; the log says so if it is set.)
+
 For an hour after a game ends, however it ended, a reply to one of its
 messages (in a DM, one of its photos) that asks the bot gets "That game is
 over. Start another with /geo." instead of the model's answer. The bot
@@ -61,23 +76,31 @@ A length and regions combine, as in `/geo europe 90s`.
 `/geo offroad` plays a game whose every round's photo was taken off
 roads: on a footpath, track or trail, or in a park, nature, a beach or
 the countryside. It combines with a length and regions in any order, as
-in `/geo offroad AU,NZ 90s`, and its intro says "off-road". Before a
-photo is downloaded, GeoGuess asks Nominatim what is at its spot (a
-reverse lookup at zoom 17) and keeps it only if that is a path, footway,
-cycleway, track, bridleway or steps (`highway`); anything `natural` or a
-`mountain_pass`; a river, stream, waterfall or rapids (`waterway`); a park, nature reserve, garden, common, recreation
-ground, golf course or beach resort (`leisure`); a national park or
-protected area (`boundary`); forest, meadow, grass, farmland, vineyard,
-orchard, allotments or a recreation ground (`landuse`); a viewpoint,
-picnic site, camp site or hut (`tourism`); or a locality, island or islet
-(`place`). A road, building, shop, address or a spot Nominatim can't
-name is turned down. The check is approximate: it judges the nearest
-feature Nominatim knows, so an unnamed trail may be passed over and a
-road through a park may get through. That is one more request per photo
-looked at, at Nominatim's one a second, so off-road photos are slower to
-find (up to 6 are looked up in each area searched, and Nominatim
-rate-limiting or blocking them stops the search for a minute);
-`GEO_KEEP=offroad` keeps one ready. One search runs at a time, so a slow
+in `/geo offroad AU,NZ 90s`, and its intro says "off-road". Before any
+photo is downloaded, GeoGuess sends the spots of up to 25 of an area's
+candidate photos to OpenStreetMap's Overpass API in one query, which
+returns the drivable roads within about 40 m of each (`highway` motorway
+to residential, service, living street, busway and their links) and the
+paths within about 20 m (path, footway, track, bridleway, steps,
+cycleway, less sidewalks and crossings), with their shapes, and counts
+for each spot the park, nature reserve, garden, common or recreation
+ground (`leisure`), wood, scrub, heath, grassland, beach, sand, bare
+rock, scree or wetland (`natural`), forest, meadow, grass, farmland,
+vineyard or orchard (`landuse`) and national park or protected area
+(`boundary`) areas it lies in (Overpass works that out, so a national
+park's outline is never downloaded). GeoGuess then measures the roads
+and paths itself: a drivable road within 40 m puts a spot on a road,
+however green its surroundings (so a dashcam on a divided road beside a
+park is turned down); otherwise it is off roads if a path is within 20 m
+or it is inside one of those areas, and anything else is turned down.
+Only the spots that pass are downloaded. The check is as good as
+OpenStreetMap's map there: an unmapped road or trail can fool it.
+Overpass is asked at most once every 2 seconds, one query for each area
+searched, so off-road photos are slower to find. Overpass being busy,
+rate-limiting or blocking the query stops that search; a kept
+`GEO_KEEP=offroad` region is then tried again after a minute while other
+searches go on, and an off-road search a game asked for waits a minute
+before any other. `GEO_KEEP=offroad` keeps one ready. One search runs at a time, so a slow
 off-road search can hold up a `/geo` for another region for up to its 3
 minutes. While a round of a game with a region is played, the next
 round's photo is already being looked for.
@@ -139,11 +162,14 @@ read guesses and the lobby's reactions).
 ### Timeouts
 
 A game's watch lasts at most 55 minutes and 5 seconds (a lobby's 5
-minutes, up to 5 fetching round 1's photo, then at most 45 for the game),
-so the default `watch_max` of 1h is enough. `/geo` waits at most about 3
-seconds for a photo before it answers, so any `timeout` above 5 seconds
-will do. GeoGuess never waits past the bot's timeout anyway, less a few
-seconds to send the answer, and starts no game the bot has given up on.
+minutes, 5 for all of the game's fetches together, round 1's and later
+rounds', then at most 45 for the game), so the default `watch_max` of 1h
+is enough. A watch is set once, by `/geo`'s answer, and can't be
+extended, which is why a game's fetches share one 5-minute allowance
+rather than having 5 minutes each. `/geo` waits at most about 3 seconds
+for a photo before it answers, so any `timeout` above 5 seconds will do.
+GeoGuess never waits past the bot's timeout anyway, less a few seconds to
+send the answer, and starts no game the bot has given up on.
 
 ### State directory and memory
 
@@ -176,14 +202,15 @@ through the bot's proxy, and trusts its CA), and nothing else.
 | `GEO_MAX_AGE_YEARS` | `10` | Ignore older photos; more than 0, up to 100 |
 | `GEO_BUFFER` | `3` | Checked photos kept ready (1 to 20) |
 | `GEO_KEEP` | empty | Regions to always keep a photo ready for, comma-separated, in `GEO_REGIONS`'s names, one photo each: `AU,NZ` keeps one Australian and one New Zealand photo, so `/geo AU` answers at once. `offroad` keeps one off-road photo ready for `/geo offroad`, and `offroad AU` one off roads in Australia, for `/geo offroad AU` (commas separate kept regions, so `offroad,AU` keeps two photos: one off roads anywhere and one in Australia). Searched before topping up `GEO_BUFFER` (a region whose search fails is tried again after a backoff, and the buffer fills meanwhile), never dropped to make room or used by a `/geo` another photo can serve, and refilled once used |
-| `GEO_WAIT` | `50s` | How long a game waits for a later round's photo when none is ready, 5s to 110s, before ending the game there. It doesn't delay `/geo`'s answer: with no photo ready, round 1 is fetched for up to 5 minutes |
 | `GEO_NOMINATIM_URL` | `https://nominatim.openstreetmap.org` | Reverse geocoder for the place names; `https://` only, as it is sent each round's answer |
+| `GEO_OVERPASS_URL` | `https://overpass-api.de/api/interpreter` | Overpass API interpreter for the off-road check, such as another instance's; `https://` only, as it is sent candidate photos' spots |
 | `GEO_PANORAMAX_URL` | `https://api.panoramax.xyz` | Panoramax API (a STAC catalogue), such as one instance's; `https://` only |
 | `GEO_MAPILLARY_URL` | `https://graph.mapillary.com` | Mapillary Graph API; `https://` only |
 
 It reaches `graph.mapillary.com` and Mapillary's image CDN,
-`api.panoramax.xyz` and the Panoramax instances' image hosts, and the
-Nominatim server, over TLS 1.3.
+`api.panoramax.xyz` and the Panoramax instances' image hosts, the
+Nominatim server, and for off-road games the Overpass server
+(`overpass-api.de`), over TLS 1.3.
 
 ## Privacy
 
@@ -198,9 +225,9 @@ the model or kept in the chat's history.
 
 What it sends out is about photos, never about players: map areas to
 search and photo IDs to Mapillary and Panoramax, and the answer's
-coordinates to Nominatim for the place's name (and, in an off-road game,
-each candidate photo's coordinates, to check it is off roads), each with
-the user agent
+coordinates to Nominatim for the place's name, and in an off-road game
+candidate photos' coordinates (nothing else) to Overpass, to check they
+are off roads, each with the user agent
 `geoguess (+https://github.com/robdevops/GeoGuess)`.
 
 A guess deleted for everyone afterwards is not passed on to GeoGuess,
@@ -226,8 +253,10 @@ off-road game, so its later rounds are off roads too.
 `$GEO_STATE_DIR/geoguess.log` (moved to `geoguess.log.1` past 4 MiB at
 start) records lobbies and their player counts, rounds started, ended
 early and revealed with their guess counts, photos rejected by reason
-(such as "on a road", an off-road game's spot on a road), and API errors
-by status. It never holds a guess, a coordinate, a place or
+(such as "on a road" and "not off-road", an off-road game's spot on a
+road or neither on a path nor in a park, nature or countryside, or
+"captioned", a photo with a caption bar burned into its top or bottom
+taller than 12% of it; a shorter bar is cropped off), and API errors by status. It never holds a guess, a coordinate, a place or
 person's name, a pseudonym or message text.
 
 ## The protocol
@@ -251,7 +280,8 @@ their cancellation, and the outbox the bot reads. GeoGuess adds:
   📍. `/geo` gives up in time for the bot's `deadline`.
 - When a round ends GeoGuess queues a `post` with the results, its players
   as `{u_…}` placeholders, then the next round's photo as a `post` with
-  the image (from the buffer, waiting up to `GEO_WAIT`); after the last
+  the image (from the buffer, after a "Fetching" `post` if it isn't
+  ready); after the last
   round, the totals and an `unwatch`. `/geo end` (or `stop`) and
   `/geo skip` answer with the results themselves. Ops the bot hasn't read
   are saved in `geo.json`, with their IDs, so they survive a restart.

@@ -25,9 +25,10 @@ type Finder struct {
 	Places  *Nominatim
 	Rand    *rand.Rand
 	Now     func() time.Time
-	// Offroad finds only photos off roads: each candidate is looked up
-	// with Places.Offroad before its download.
-	Offroad bool
+	// Offroad finds only photos off roads: a box's candidates are looked
+	// up together with Overpass before any download.
+	Offroad  bool
+	Overpass *Overpass // needed for Offroad
 
 	// Used reports whether a candidate's Key was used recently; nil is none.
 	Used func(key string) bool
@@ -39,15 +40,13 @@ type Finder struct {
 }
 
 // The search's limits: boxes tried in a seed, seeds tried in one Find,
-// photos downloaded from one box, and in an off-road search, candidates
-// looked up in one box. A lookup waits its turn at Nominatim's one a
-// second, so a box costs at most about 9s of lookups, and ctx (the
-// caller's timeout) ends a Find that runs long.
+// and photos downloaded from one box. In an off-road search a box's
+// candidates (up to overpassBatch) are looked up in one Overpass query,
+// and ctx (the caller's timeout) ends a Find that runs long.
 const (
 	boxesPerSeed  = 4
 	seedsPerFind  = 8
 	fetchesPerBox = 3
-	offroadPerBox = 6
 )
 
 // ErrNotFound is a Find that tried its seeds and found nothing.
@@ -88,35 +87,12 @@ func (f *Finder) search(ctx context.Context, src Source, box BBox) (Photo, error
 	}
 	kept := f.Rules.Filter(cands, f.Now(), f.Used, reject)
 	f.Rand.Shuffle(len(kept), func(i, j int) { kept[i], kept[j] = kept[j], kept[i] })
-	tries := fetchesPerBox
 	if f.Offroad {
-		tries = offroadPerBox
+		if kept, err = f.offroad(ctx, kept, reject); err != nil {
+			return Photo{}, err
+		}
 	}
-	fetches := 0
-	for _, c := range kept[:min(len(kept), tries)] {
-		if fetches == fetchesPerBox {
-			break
-		}
-		if f.Offroad {
-			off, err := f.Places.Offroad(ctx, c.At)
-			if err != nil {
-				if ctx.Err() != nil {
-					return Photo{}, ctx.Err()
-				}
-				if errors.Is(err, ErrSlowDown) {
-					return Photo{}, err
-				}
-				if f.Failed != nil {
-					f.Failed(err)
-				}
-				continue
-			}
-			if !off {
-				reject(RejectRoad)
-				continue
-			}
-		}
-		fetches++
+	for _, c := range kept[:min(len(kept), fetchesPerBox)] {
 		data, err := src.Fetch(ctx, c)
 		if err != nil {
 			if ctx.Err() != nil {
@@ -146,4 +122,36 @@ func (f *Finder) search(ctx context.Context, src Source, box BBox) (Photo, error
 		return Photo{Candidate: c, Place: place, JPEG: jpeg, Offroad: f.Offroad}, nil
 	}
 	return Photo{}, ErrNotFound
+}
+
+// offroad is the first overpassBatch of kept that Overpass finds off
+// roads, rejecting the rest of them. A failed lookup fails the box:
+// ErrNotFound once reported, or ErrSlowDown or ctx's error as it is.
+func (f *Finder) offroad(ctx context.Context, kept []Candidate, reject func(Reject)) ([]Candidate, error) {
+	kept = kept[:min(len(kept), overpassBatch)]
+	pts := make([]Point, len(kept))
+	for i, c := range kept {
+		pts[i] = c.At
+	}
+	whys, err := f.Overpass.Offroad(ctx, pts)
+	switch {
+	case ctx.Err() != nil:
+		return nil, ctx.Err()
+	case errors.Is(err, ErrSlowDown):
+		return nil, err
+	case err != nil:
+		if f.Failed != nil {
+			f.Failed(err)
+		}
+		return nil, ErrNotFound
+	}
+	var off []Candidate
+	for i, c := range kept {
+		if whys[i] != nil {
+			reject(whys[i].(Reject))
+			continue
+		}
+		off = append(off, c)
+	}
+	return off, nil
 }

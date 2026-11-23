@@ -72,7 +72,9 @@ func (s *server) prefetch(ctx context.Context) {
 			s.retries[region] = retry{time.Now().Add(wait), min(r.failures+1, 10)}
 		}
 		s.mu.Unlock()
-		if keep && !errors.Is(err, geo.ErrSlowDown) {
+		// Overpass being busy slows down only a kept region's off-road
+		// searches; other sources being busy slows down every search.
+		if keep && (!errors.Is(err, geo.ErrSlowDown) || errors.Is(err, geo.ErrOverpassBusy)) {
 			s.log.Printf("no photo found for a kept region (%v); trying it again in %s", err, wait)
 			continue
 		}
@@ -117,11 +119,12 @@ func (s *server) idle(ctx context.Context, next time.Time) bool {
 	return true
 }
 
-// awaited reports whether a game yet to open round 1 waits for a photo
-// in region, so a failed search there is tried again. s.mu is held.
+// awaited reports whether a game yet to open round 1, or between rounds,
+// waits for a photo in region, so a failed search there is tried again.
+// s.mu is held.
 func (s *server) awaited(region string) bool {
 	for _, r := range s.rounds {
-		if r.Number == 0 && r.Region == region {
+		if (r.Number == 0 || r.Waiting) && r.Region == region {
 			return true
 		}
 	}
@@ -331,16 +334,18 @@ func (s *server) wakeUp() {
 }
 
 // search is the real finder: Mapillary and Panoramax, checked by the geo
-// package, with places named by Nominatim.
+// package, with places named by Nominatim and off-road spots told by
+// Overpass.
 type search struct {
-	sources []geo.Source
-	rules   geo.Rules
-	places  *geo.Nominatim
-	rand    *rand.Rand
-	used    func(key string) bool
-	log     *log.Logger
-	seeds   map[string]*geo.Seeds
-	regions string // GEO_REGIONS
+	sources  []geo.Source
+	rules    geo.Rules
+	places   *geo.Nominatim
+	overpass *geo.Overpass
+	rand     *rand.Rand
+	used     func(key string) bool
+	log      *log.Logger
+	seeds    map[string]*geo.Seeds
+	regions  string // GEO_REGIONS
 }
 
 // seedsFor is whether regions asks for photos off roads, and the seeds of
@@ -372,7 +377,7 @@ func (f *search) Find(ctx context.Context, regions string) (geo.Photo, error) {
 	rejected := map[string]int{}
 	finder := geo.Finder{
 		Sources: f.sources, Seeds: seeds, Rules: f.rules, Places: f.places, Rand: f.rand, Now: time.Now,
-		Offroad:  off,
+		Offroad: off, Overpass: f.overpass,
 		Used:     f.used,
 		Rejected: func(source string, why geo.Reject) { rejected[source+": "+string(why)]++ },
 		Failed:   func(err error) { f.log.Printf("search failed: %v", err) },

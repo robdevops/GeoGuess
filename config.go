@@ -25,13 +25,17 @@ type config struct {
 	MaxAge     time.Duration // GEO_MAX_AGE_YEARS, as a duration
 	Buffer     int           // GEO_BUFFER: checked photos kept ready
 	Keep       []string      // GEO_KEEP: regions always kept with a photo ready, one each; "offroad" or "offroad AU" (an off-road photo in AU, kept as "offroad,AU")
-	Wait       time.Duration // GEO_WAIT: how long a game waits for a later round's photo when none is ready
 	Nominatim  string        // GEO_NOMINATIM_URL
+	Overpass   string        // GEO_OVERPASS_URL
 	Panoramax  string        // GEO_PANORAMAX_URL
 	Mapillary  string        // GEO_MAPILLARY_URL
 	gap        time.Duration // between a round's results and the next photo: gapTime, not a setting; 0 in most tests
-	grace      time.Duration // how long /geo waits for a photo before starting without one: startGrace, not a setting
+	grace      time.Duration // how long /geo waits for a photo before starting without one, and a later round past the gap before fetching: startGrace, not a setting
 }
+
+// between is the longest a later round waits for a photo, after the
+// previous round's results, before it posts that it is fetching one.
+func (c config) between() time.Duration { return c.gap + c.grace }
 
 // The shortest and longest round, and the defaults of the settings.
 const (
@@ -39,9 +43,6 @@ const (
 	maxRound        = 30 * time.Minute
 	defaultRound    = 3 * time.Minute
 	defaultMemLimit = "200MiB"
-	minWait         = 5 * time.Second
-	maxWait         = 110 * time.Second
-	defaultWait     = 50 * time.Second
 )
 
 // year is a year as GEO_MAX_AGE_YEARS counts it.
@@ -55,6 +56,7 @@ func loadConfig(getenv func(string) string) (config, error) {
 		Token:     strings.TrimSpace(getenv("GEO_MAPILLARY_TOKEN")),
 		Regions:   strings.TrimSpace(getenv("GEO_REGIONS")),
 		Nominatim: cmp.Or(strings.TrimSpace(getenv("GEO_NOMINATIM_URL")), geo.NominatimURL),
+		Overpass:  cmp.Or(strings.TrimSpace(getenv("GEO_OVERPASS_URL")), geo.OverpassURL),
 		Panoramax: cmp.Or(strings.TrimSpace(getenv("GEO_PANORAMAX_URL")), geo.PanoramaxURL),
 		Mapillary: cmp.Or(strings.TrimSpace(getenv("GEO_MAPILLARY_URL")), geo.MapillaryURL),
 	}
@@ -115,17 +117,12 @@ func loadConfig(getenv func(string) string) (config, error) {
 		}
 		c.Keep = append(c.Keep, withOffroad(off, rest))
 	}
-	c.Wait = defaultWait
 	c.gap = gapTime
 	c.grace = startGrace
-	if v := strings.TrimSpace(getenv("GEO_WAIT")); v != "" {
-		if c.Wait, err = time.ParseDuration(v); err != nil || c.Wait < minWait || c.Wait > maxWait {
-			errs = append(errs, fmt.Errorf("GEO_WAIT is %q: use 5s to 110s, such as 50s", v))
-		}
-	}
-	// Over TLS only: the geocoder is sent each round's answer.
+	// Over TLS only: the geocoder is sent each round's answer, and
+	// Overpass an off-road search's spots.
 	for _, u := range []struct{ name, url string }{
-		{"GEO_NOMINATIM_URL", c.Nominatim}, {"GEO_PANORAMAX_URL", c.Panoramax}, {"GEO_MAPILLARY_URL", c.Mapillary},
+		{"GEO_NOMINATIM_URL", c.Nominatim}, {"GEO_OVERPASS_URL", c.Overpass}, {"GEO_PANORAMAX_URL", c.Panoramax}, {"GEO_MAPILLARY_URL", c.Mapillary},
 	} {
 		if !strings.HasPrefix(u.url, "https://") {
 			errs = append(errs, fmt.Errorf("%s must start with https://", u.name))

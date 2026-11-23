@@ -7,6 +7,7 @@ import (
 	"image/jpeg"
 	"math"
 	"math/rand/v2"
+	"slices"
 
 	xdraw "golang.org/x/image/draw"
 )
@@ -28,6 +29,35 @@ const (
 	edgeLevel     = 100
 )
 
+// The caption bar check's limits, on the photo at full size: a caption bar
+// is rows from the top or bottom edge mostly (captionRow of each row,
+// captionFlat of the band) within captionTol of one dark or light colour,
+// smooth there (a spread under captionSD) apart from text that differs
+// from it by captionText, ending at a row mostly unlike it (under
+// captionEnd). Its text is dense, as letters are (a median of captionInk
+// of the width in the rows with any), made of short strokes (a median
+// run under captionStroke of the width), and clear of the bar's inner
+// rows, so a sky crossed by wires or a post, or a bonnet with a
+// reflection, is not a bar. Bars over maxCaption
+// of the height are rejected; a band still going at scanCaption is not a
+// bar.
+const (
+	maxCaption    = 0.12
+	scanCaption   = 0.25
+	captionTol    = 16
+	captionRow    = 0.60
+	captionFlat   = 0.75
+	captionSD     = 4.5
+	captionText   = 64
+	minText       = 0.005 // of the band's pixels
+	captionInk    = 0.02
+	captionStroke = 0.01
+	captionEnd    = 0.30
+	minCaption    = 4 // rows
+	captionDark   = 64
+	captionPale   = 192
+)
+
 // The output and the panorama view.
 const (
 	outWidth   = 1600
@@ -40,9 +70,10 @@ const (
 
 // Vet runs the pixel checks on a downloaded photo and returns it ready to
 // post: a 90° view of a panorama, at the capture heading turned a random
-// angle by r, or a flat photo as it is, with any dashboard band cropped off,
-// as a JPEG about 1600 px wide and under 1 MB, which carries no metadata.
-// The error is a Reject.
+// angle by r, or a flat photo as it is, with any caption bar burned into
+// its top or bottom and any dashboard band cropped off, as a JPEG about
+// 1600 px wide and under 1 MB, which carries no metadata. The error is a
+// Reject.
 func Vet(data []byte, pano bool, r *rand.Rand) ([]byte, error) {
 	cfg, _, err := image.DecodeConfig(bytes.NewReader(data))
 	if err != nil || cfg.Width <= 0 || cfg.Height <= 0 || int64(cfg.Width)*int64(cfg.Height) > maxPixels {
@@ -65,11 +96,17 @@ func Vet(data []byte, pano bool, r *rand.Rand) ([]byte, error) {
 	case cfg.Width < minWidth:
 		return nil, RejectSmall
 	default:
+		top, bottom := captionBand(src, false), captionBand(src, true)
+		if top < 0 || bottom < 0 || float64(top+bottom) > maxCaption*float64(cfg.Height) {
+			return nil, RejectCaption
+		}
+		src = src.SubImage(image.Rect(0, top, cfg.Width, cfg.Height-bottom)).(*image.RGBA)
+		sw, sh := cfg.Width, cfg.Height-top-bottom
 		render = func(w int) *image.RGBA {
-			if w == cfg.Width {
+			if w == sw {
 				return src
 			}
-			return scale(src, w, w*cfg.Height/cfg.Width, xdraw.CatmullRom)
+			return scale(src, w, w*sh/sw, xdraw.CatmullRom)
 		}
 	}
 	small := render(analysisWidth)
@@ -78,8 +115,9 @@ func Vet(data []byte, pano bool, r *rand.Rand) ([]byte, error) {
 		return nil, err
 	}
 	out := render(width)
-	h := int(math.Round(float64(out.Bounds().Dy()) * keep))
-	return encode(out.SubImage(image.Rect(0, 0, out.Bounds().Dx(), h)))
+	b := out.Bounds()
+	b.Max.Y = b.Min.Y + int(math.Round(float64(b.Dy())*keep))
+	return encode(out.SubImage(b))
 }
 
 // scale is src scaled to w × h.
@@ -260,6 +298,120 @@ func dashboard(luma []float64, w, h int) int {
 		band++
 	}
 	return band
+}
+
+// captionBand is the rows, with a margin, of a caption bar burned into m
+// along its bottom edge, or its top: a flat dark or light band starting at
+// the very edge, with lines of text in it, ending sharply. It is 0 for
+// none, and -1 for a bar taller than maxCaption of the height.
+func captionBand(m *image.RGBA, bottom bool) int {
+	b := m.Bounds()
+	w, h := b.Dx(), b.Dy()
+	limit := int(maxCaption*float64(h)) + 1
+	luma := make([]float64, w)
+	row := func(i int) []float64 {
+		y := b.Min.Y + i
+		if bottom {
+			y = b.Max.Y - 1 - i
+		}
+		for x := range w {
+			p := m.PixOffset(b.Min.X+x, y)
+			luma[x] = 0.299*float64(m.Pix[p]) + 0.587*float64(m.Pix[p+1]) + 0.114*float64(m.Pix[p+2])
+		}
+		return luma
+	}
+	base := median(row(0))
+	if base > captionDark && base < captionPale {
+		return 0
+	}
+	// near is how many of l are within captionTol of base.
+	near := func(l []float64) int {
+		n := 0
+		for _, v := range l {
+			if math.Abs(v-base) <= captionTol {
+				n++
+			}
+		}
+		return n
+	}
+	var sum, sq float64
+	flat, band := 0, 0
+	var text []int        // each row's text pixels
+	var strokes []float64 // the mean run of text pixels in each row with any
+	for ; band < int(scanCaption*float64(h)); band++ {
+		l := row(band)
+		if float64(near(l)) < captionRow*float64(w) {
+			break
+		}
+		n, runs, in := 0, 0, false
+		for _, v := range l {
+			d := math.Abs(v - base)
+			switch {
+			case d <= captionTol:
+				flat++
+				sum += v
+				sq += v * v
+			case d >= captionText:
+				n++
+				if !in {
+					runs++
+				}
+			}
+			in = d >= captionText
+		}
+		text = append(text, n)
+		if runs > 0 {
+			strokes = append(strokes, float64(n)/float64(runs))
+		}
+	}
+	if band < minCaption || band >= int(scanCaption*float64(h)) {
+		return 0 // too thin to hold text, or no end in sight: not a bar
+	}
+	pixels := float64(band * w)
+	var inked []int // the text pixels of the rows with any
+	for _, n := range text {
+		if n > 0 {
+			inked = append(inked, n)
+		}
+	}
+	if float64(flat) < captionFlat*pixels || len(inked) == 0 {
+		return 0
+	}
+	all := 0
+	for _, n := range inked {
+		all += n
+	}
+	if float64(all) < minText*pixels {
+		return 0
+	}
+	slices.Sort(inked)
+	if float64(inked[len(inked)/2]) < captionInk*float64(w) {
+		return 0 // stray strokes, not lines of letters
+	}
+	if median(strokes) >= captionStroke*float64(w) {
+		return 0 // long streaks, not letters
+	}
+	for _, n := range text[band-max(1, band/10):] {
+		if n > 0 {
+			return 0 // no clear rows inside the text: not a bar of it
+		}
+	}
+	if mean := sum / float64(flat); math.Sqrt(max(sq/float64(flat)-mean*mean, 0)) >= captionSD {
+		return 0
+	}
+	if float64(near(row(band))) >= captionEnd*float64(w) {
+		return 0 // no clear edge: dark or pale photo, not a bar
+	}
+	if band >= limit {
+		return -1
+	}
+	return min(band+max(2, h/200), h)
+}
+
+// median is the middle of l, which it sorts.
+func median(l []float64) float64 {
+	slices.Sort(l)
+	return l[len(l)/2]
 }
 
 // encode is m as a JPEG of quality 85, lower if that is over 1 MB.

@@ -7,6 +7,7 @@ import (
 	"image/jpeg"
 	"math"
 	"math/rand/v2"
+	"os"
 	"testing"
 
 	xdraw "golang.org/x/image/draw"
@@ -263,5 +264,228 @@ func TestGnomonic(t *testing.T) {
 	}
 	if g := v.RGBAAt(50, 0).G; g < 50 {
 		t.Errorf("top row shows latitude level %d, want under 45° up", g)
+	}
+}
+
+// captioned is m with a caption bar of rows burned into its bottom, or
+// its top: bg with words of thin ink strokes.
+func captioned(m *image.RGBA, rows int, top bool, bg, ink color.RGBA) *image.RGBA {
+	h := m.Bounds().Dy()
+	return mapPixels(m, func(x, y int, c color.RGBA) color.RGBA {
+		i := h - 1 - y // the row in the bar, from the edge
+		if top {
+			i = y
+		}
+		if i >= rows {
+			return c
+		}
+		t := i - rows/4 // the row in the text
+		inWord := x%160 < 90 && t >= 0 && t < rows/2
+		if inWord && (x%7 < 2 || (t == 0 || t == rows/4) && x%14 < 5) {
+			return ink
+		}
+		return bg
+	})
+}
+
+// shadowed is m with its bottom rows a shadowed road: dark, with grain,
+// and a bright lane mark.
+func shadowed(m *image.RGBA, rows int, r *rand.Rand) *image.RGBA {
+	w, h := m.Bounds().Dx(), m.Bounds().Dy()
+	return mapPixels(m, func(x, y int, c color.RGBA) color.RGBA {
+		if y < h-rows {
+			return c
+		}
+		if x > w/2 && x < w/2+w/30 {
+			return color.RGBA{200, 200, 190, 255}
+		}
+		l := clamp(35 + int(r.NormFloat64()*14))
+		return color.RGBA{l, l, l + 3, 255}
+	})
+}
+
+// skied is m with its top rows a flat, clipped sky of luma l with a
+// little grain, crossed by two sagging wires and a lamp post rising into
+// it, all of ink.
+func skied(m *image.RGBA, rows int, l, ink uint8, r *rand.Rand) *image.RGBA {
+	w := m.Bounds().Dx()
+	return mapPixels(m, func(x, y int, c color.RGBA) color.RGBA {
+		if y >= rows {
+			return c
+		}
+		u := float64(x-w/2) / float64(w/2)
+		for _, top := range []float64{0.3, 0.5} {
+			if sag := float64(rows) * (top + 0.4*u*u); math.Abs(float64(y)-sag) < 1 {
+				return color.RGBA{ink, ink, ink, 255}
+			}
+		}
+		if x >= w*7/10 && x < w*7/10+4 && y > rows/6 {
+			return color.RGBA{ink, ink, ink, 255}
+		}
+		v := clamp(int(l) + int(r.NormFloat64()*1.5))
+		return color.RGBA{v, v, v, 255}
+	})
+}
+
+// bonnet is m with its bottom rows a car's black bonnet with a bright,
+// sharp reflection across a third of it.
+func bonnet(m *image.RGBA, rows int, r *rand.Rand) *image.RGBA {
+	w, h := m.Bounds().Dx(), m.Bounds().Dy()
+	return mapPixels(m, func(x, y int, c color.RGBA) color.RGBA {
+		i := h - 1 - y
+		switch {
+		case i >= rows:
+			return c
+		case i >= rows/2 && i < rows/2+3 && x > w*3/10 && x < w*62/100:
+			return color.RGBA{140, 140, 150, 255}
+		}
+		v := clamp(12 + int(r.NormFloat64()*1.5))
+		return color.RGBA{v, v, v, 255}
+	})
+}
+
+func TestCaptionBand(t *testing.T) {
+	r := rand.New(rand.NewPCG(11, 12))
+	black, white := color.RGBA{6, 6, 6, 255}, color.RGBA{240, 240, 240, 255}
+	// A vignette: the bottom darkens smoothly to near black, with a lane
+	// mark, but has no edge.
+	vignette := mapPixels(scene(1024, 768, r), func(x, y int, c color.RGBA) color.RGBA {
+		if y < 650 {
+			return c
+		}
+		if x > 500 && x < 540 {
+			return color.RGBA{220, 220, 220, 255}
+		}
+		l := clamp(10 + (767-y)*90/118 + int(r.NormFloat64()*2))
+		return color.RGBA{l, l, l, 255}
+	})
+	for _, tc := range []struct {
+		name        string
+		m           *image.RGBA
+		top, bottom int // the rows wanted, give or take 1 for a bar
+	}{
+		{"none", scene(1024, 768, r), 0, 0},
+		{"bottom", captioned(scene(1024, 768, r), 20, false, black, white), 0, 20 + 3},
+		{"top, pale", captioned(scene(1024, 768, r), 24, true, white, black), 24 + 3, 0},
+		{"both", captioned(captioned(scene(1024, 768, r), 18, true, black, white), 18, false, black, white), 18 + 3, 18 + 3},
+		{"too tall", captioned(scene(1024, 768, r), 768/7, false, black, white), 0, -1},
+		{"flat without text", testPhotos(1024, 768)[6].m, 0, 0},
+		{"shadowed road", shadowed(scene(1024, 768, r), 80, r), 0, 0},
+		{"vignette", vignette, 0, 0},
+		{"a pale sky, 5%", skied(scene(1024, 768, r), 38, 250, 60, r), 0, 0},
+		{"a pale sky, 20%", skied(scene(1024, 768, r), 154, 250, 60, r), 0, 0},
+		{"a pale sky, 30%", skied(scene(1024, 768, r), 230, 250, 60, r), 0, 0},
+		{"a night sky, 20%", skied(scene(1024, 768, r), 154, 8, 200, r), 0, 0},
+		{"a bonnet, 15%", bonnet(scene(1024, 768, r), 115, r), 0, 0},
+		{"a bonnet, 20%", bonnet(scene(1024, 768, r), 154, r), 0, 0},
+	} {
+		// As Vet sees it: through a JPEG.
+		got, err := jpeg.Decode(bytes.NewReader(jpegOf(t, tc.m)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		m := image.NewRGBA(got.Bounds())
+		xdraw.Draw(m, m.Bounds(), got, got.Bounds().Min, xdraw.Src)
+		top, bottom := captionBand(m, false), captionBand(m, true)
+		// A bar's rows may be off by 1; none (0) and too tall (-1) not.
+		off := func(got, want int) bool { return got != want && (want <= 0 || abs(got-want) > 1) }
+		if off(top, tc.top) || off(bottom, tc.bottom) {
+			t.Errorf("%s: top %d, bottom %d; want %d, %d", tc.name, top, bottom, tc.top, tc.bottom)
+		}
+	}
+}
+
+func abs(n int) int { return max(n, -n) }
+
+// darkRows is the share of the pixels in m's bottom rows that are near
+// black.
+func darkRows(m image.Image, rows int) float64 {
+	b := m.Bounds()
+	dark := 0
+	for y := b.Max.Y - rows; y < b.Max.Y; y++ {
+		for x := b.Min.X; x < b.Max.X; x++ {
+			if l := color.GrayModel.Convert(m.At(x, y)).(color.Gray).Y; l < 16 {
+				dark++
+			}
+		}
+	}
+	return float64(dark) / float64(rows*b.Dx())
+}
+
+func TestVetCaption(t *testing.T) {
+	t.Parallel()
+	r := rand.New(rand.NewPCG(13, 14))
+	black, white := color.RGBA{6, 6, 6, 255}, color.RGBA{240, 240, 240, 255}
+	vet := func(name string, m *image.RGBA) (image.Image, error) {
+		out, err := Vet(jpegOf(t, m), false, r)
+		if err != nil {
+			return nil, err
+		}
+		got, _, err := image.Decode(bytes.NewReader(out))
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		return got, nil
+	}
+
+	// A real photo, scaled down for the test data and back up for Vet:
+	// a Lima street by Kaart (Mapillary, CC BY-SA 4.0) with its country,
+	// city, time, author and position burned into a black bar along the
+	// bottom, about 2.5% of the height.
+	data, err := os.ReadFile("testdata/caption.jpg")
+	if err != nil {
+		t.Fatal(err)
+	}
+	small, err := jpeg.Decode(bytes.NewReader(data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if darkRows(small, 3) < 0.5 {
+		t.Fatal("the test photo has no caption bar")
+	}
+	m, err := vet("Lima", scale(small, 1600, 1600*small.Bounds().Dy()/small.Bounds().Dx(), xdraw.CatmullRom))
+	if err != nil {
+		t.Fatalf("Lima: %v", err)
+	}
+	if h := m.Bounds().Dy(); m.Bounds().Dx() != 1600 || h < 894*95/100 || h > 894*985/1000 {
+		t.Errorf("Lima: %v, want 1600 wide with about 2.5%% cut", m.Bounds())
+	}
+	if d := darkRows(m, 3); d > 0.3 {
+		t.Errorf("Lima: %.0f%% of the bottom rows are black", 100*d)
+	}
+
+	for _, tc := range []struct {
+		name string
+		m    *image.RGBA
+		h    int // the height wanted, give or take 2; 0 for rejected
+	}{
+		{"bottom", captioned(scene(1024, 768, r), 20, false, black, white), 768 - 23},
+		{"top", captioned(scene(1024, 768, r), 20, true, black, white), 768 - 23},
+		{"too tall", captioned(scene(1024, 768, r), 100, false, black, white), 0},
+		{"shadowed road", shadowed(scene(1024, 768, r), 80, r), 768},
+	} {
+		m, err := vet(tc.name, tc.m)
+		switch {
+		case tc.h == 0 && err != RejectCaption:
+			t.Errorf("%s: %v, want %v", tc.name, err, RejectCaption)
+		case tc.h == 0:
+		case err != nil:
+			t.Errorf("%s: %v", tc.name, err)
+		case abs(m.Bounds().Dy()-tc.h) > 2 || darkRows(m, 3) > 0.3:
+			t.Errorf("%s: %v, %.0f%% dark at the bottom; want %d high", tc.name, m.Bounds(), 100*darkRows(m, 3), tc.h)
+		}
+	}
+	// Skies and a bonnet are no caption, whatever else Vet makes of them.
+	for _, tc := range []struct {
+		name string
+		m    *image.RGBA
+	}{
+		{"a pale sky", skied(scene(1024, 768, r), 154, 250, 60, r)},
+		{"a night sky", skied(scene(1024, 768, r), 154, 8, 200, r)},
+		{"a bonnet", bonnet(scene(1024, 768, r), 115, r)},
+	} {
+		if _, err := vet(tc.name, tc.m); err == RejectCaption {
+			t.Errorf("%s: %v", tc.name, err)
+		}
 	}
 }

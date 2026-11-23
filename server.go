@@ -39,7 +39,7 @@ type server struct {
 	wants   map[string]bool               // regions a /geo asked for that the buffer lacks
 	retries map[string]retry              // GEO_KEEP regions whose last search failed
 	changed chan struct{}                 // closed when the buffer gains a photo
-	fetches map[string]context.CancelFunc // by game, stops the wait for round 1's photo
+	fetches map[string]context.CancelFunc // by game, stops the fetch of a round's photo
 	seeds   map[string]*geo.Seeds
 
 	saveMu sync.Mutex     // one save at a time, so the last one written is the newest
@@ -69,7 +69,8 @@ type round struct {
 	Wins     map[string]int `json:"wins,omitempty"`     // rounds won so far, by player
 	Tie      []string       `json:"tie,omitempty"`      // in a tie-breaker round, the players tied for the win
 	Waiting  bool           `json:"waiting,omitempty"`  // between rounds, for the next photo; before round 1 (Number 0), for its photo
-	Fetch    time.Time      `json:"fetch,omitempty"`    // when the game began waiting for round 1's photo: it gives up fetchMax after
+	Fetch    time.Time      `json:"fetch,omitempty"`    // when the fetch of the next round's photo began, if one is on: it gives up once Fetched reaches fetchMax
+	Fetched  time.Duration  `json:"fetched,omitempty"`  // how long the game's fetches that found a photo took, from its allowance of fetchMax
 	Closed   time.Time      `json:"closed,omitempty"`   // when the last round ended: the next photo waits gapTime after it
 	Lobby    bool           `json:"lobby,omitempty"`    // waiting for players to join by reacting to the intro
 	Joined   []string       `json:"joined,omitempty"`   // who has joined
@@ -122,7 +123,8 @@ const (
 	// late guess still stays out of the chat's history.
 	watchSlack = 5 * time.Second
 	// gameRounds is the rounds in a game, and maxGame the longest a game
-	// may run, with its waits for photos: with lobbyMax and fetchMax,
+	// may run, with the gap and grace before each later round's photo: with
+	// lobbyMax and fetchMax, the one allowance for all of a game's fetches,
 	// within the bot's default watch_max of 1h.
 	gameRounds = 3
 	// gapTime is the pause between a round's results and the next photo,

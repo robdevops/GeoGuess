@@ -61,6 +61,9 @@ func run() int {
 		cfg.Regions = "FR"
 		logger.Printf("GEO_MAPILLARY_TOKEN is not set: Panoramax only, in France unless GEO_REGIONS says otherwise")
 	}
+	if os.Getenv("GEO_WAIT") != "" {
+		logger.Printf("GEO_WAIT is no longer used: a later round's photo is fetched as round 1's is")
+	}
 	client := httpx.Client(4)
 	var sources []geo.Source
 	if cfg.Token != "" {
@@ -69,7 +72,7 @@ func run() int {
 	sources = append(sources, geo.NewPanoramax(cfg.Panoramax, client))
 	finder := &search{
 		sources: sources, rules: geo.Rules{MinQuality: cfg.MinQuality, MaxAge: cfg.MaxAge},
-		places: geo.NewNominatim(cfg.Nominatim, client), rand: rand.New(rand.NewPCG(rand.Uint64(), rand.Uint64())),
+		places: geo.NewNominatim(cfg.Nominatim, client), overpass: geo.NewOverpass(cfg.Overpass, client), rand: rand.New(rand.NewPCG(rand.Uint64(), rand.Uint64())),
 		log: logger, seeds: map[string]*geo.Seeds{}, regions: cfg.Regions,
 	}
 	s, err := newServer(cfg, realClock{}, finder, logger)

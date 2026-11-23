@@ -35,20 +35,39 @@ const pin = "📍"
 const replyTime = 3 * time.Second
 
 // startGrace is how long /geo waits for a photo when none is ready before
-// it starts the game without one, and fetchMax how long a game then waits
-// for round 1's photo, from when it began to, before it is called off:
-// more than one whole search (findTimeout).
+// it starts the game without one, and how long past the gap a later round
+// waits before it posts that it is fetching its photo. fetchMax is the
+// most a game waits fetching photos, round 1's and later rounds' together,
+// before it is called off or ends: more than one whole search
+// (findTimeout).
 const (
 	startGrace = 3 * time.Second
 	fetchMax   = 5 * time.Minute
 )
 
-// fetching is the answer, or post, while round 1's photo is looked for.
-func fetching(region string) string {
-	if off, _ := splitOffroad(region); off {
+// fetching is the answer, or post, while a round's photo is looked for:
+// round 1's when name is empty, else the round name gives ("round 2", or
+// "the tie-breaker").
+func fetching(region, name string) string {
+	off, _ := splitOffroad(region)
+	switch {
+	case name != "" && off:
+		return fmt.Sprintf("🔎 Fetching an off-road spot for %s…", name)
+	case name != "":
+		return fmt.Sprintf("🔎 Fetching %s's spot…", name)
+	case off:
 		return "🔎 Fetching an off-road spot… round 1 follows as soon as it's found."
 	}
 	return "🔎 Fetching a spot… round 1 follows as soon as it's found."
+}
+
+// roundName is what round number of r's game is called in a post: "round
+// 2", or "the tie-breaker" past the game's rounds.
+func roundName(r *round, number int) string {
+	if number > r.of() {
+		return "the tie-breaker"
+	}
+	return fmt.Sprintf("round %d", number)
 }
 
 // noSpot is the post when round 1's photo wasn't found by fetchMax.
@@ -143,7 +162,7 @@ func (s *server) command(ctx context.Context, c *addon.Context, args string) add
 		}
 	}
 	region = withOffroad(off, region)
-	if of := s.perGame; gameTime(of, length, s.cfg.Wait+s.cfg.gap) > maxGame {
+	if of := s.perGame; gameTime(of, length, s.cfg.between()) > maxGame {
 		return addon.Text(longGame)
 	}
 	return s.start(ctx, c, length, region)
@@ -207,15 +226,19 @@ func (s *server) start(ctx context.Context, c *addon.Context, length time.Durati
 		ID: "r" + randomID(6), Chat: c.Chat, Starter: c.Sender,
 		Guesses: map[string]guess{},
 		Of:      of, Region: region, Length: length, Totals: map[string]int{},
-		Until: now.Add(gameTime(of, length, s.cfg.Wait+s.cfg.gap)),
+		Until: now.Add(gameTime(of, length, s.cfg.between())),
 	}
 	s.rounds[c.Chat] = r
-	if c.Group && s.srv.WatchReactions() { // players join by reacting to the intro first; the photo waits
+	lobby := c.Group && s.srv.WatchReactions()
+	if of > 1 || !ok || lobby { // one allowance for all the game's fetches together
+		r.Until = r.Until.Add(fetchMax)
+	}
+	if lobby { // players join by reacting to the intro first; the photo waits
 		if ok {
 			s.putBack(photo)
 		}
 		r.Lobby, r.Joined, r.CallOff = true, nil, now.Add(lobbyMax)
-		r.Until = r.Until.Add(lobbyMax + fetchMax)
+		r.Until = r.Until.Add(lobbyMax)
 		s.armLobby(r)
 		s.mu.Unlock()
 		s.save()
@@ -227,12 +250,11 @@ func (s *server) start(ctx context.Context, c *addon.Context, length time.Durati
 	}
 	if !ok { // round 1 is the next round to come
 		r.Waiting, r.Fetch, r.Closed = true, now, now // the gap lets the answer go out before round 1
-		r.Until = r.Until.Add(fetchMax)
 		s.goNext(c.Chat, r.ID, 1)
 		s.mu.Unlock()
 		s.save()
 		s.log.Printf("game %s fetching round 1's photo", r.ID)
-		return addon.Result{Content: addon.Text(fetching(region)).Content, Meta: watchMeta(r, false)}
+		return addon.Result{Content: addon.Text(fetching(region, "")).Content, Meta: watchMeta(r, false)}
 	}
 	r.Number, r.Started, r.Deadline = 1, now, now.Add(length)
 	r.Answer, r.Place = photo.At, photo.Place.Name
@@ -268,9 +290,10 @@ func (s *server) putBack(p geo.Photo) {
 	s.changed = make(chan struct{})
 }
 
-// gameTime is the longest a game of of rounds of length may run: a
-// tie-breaker round after them, if one is needed, and the waits for each
-// later round's photo.
+// gameTime is the longest a game of of rounds of length may run, but for
+// its fetches (fetchMax, shared): a tie-breaker round after them, if one
+// is needed, and wait before each later round's photo, the gap and the
+// grace before a fetch.
 func gameTime(of int, length, wait time.Duration) time.Duration {
 	if of == 1 {
 		return length + settle
@@ -365,7 +388,7 @@ func (s *server) advanceLocked(r *round, results string) {
 	s.endGame(r)
 }
 
-// endGame forgets r's game, stops any fetch of round 1's photo, and
+// endGame forgets r's game, stops any fetch of a round's photo, and
 // queues the end of its watch. s.mu is held.
 func (s *server) endGame(r *round) {
 	delete(s.rounds, r.Chat)
@@ -390,9 +413,10 @@ func (s *server) goNext(chat, id string, number int) {
 }
 
 // nextRound opens round number of the game id in chat with a photo from
-// the buffer, waiting up to GEO_WAIT for one, and queues the photo; with
-// none, or no time left on the game's watch, it ends the game. Round 1's
-// photo, if not ready, is fetched for up to fetchMax.
+// the buffer, and queues the photo. A later round waits the gap and
+// startGrace for one; then, as round 1 does when none is ready, it posts
+// that it is fetching one and waits for what is left of fetchMax. With no
+// photo by then, or no time left on the game's watch, it ends the game.
 func (s *server) nextRound(chat, id string, number int) {
 	s.mu.Lock()
 	r := s.rounds[chat]
@@ -404,15 +428,15 @@ func (s *server) nextRound(chat, id string, number int) {
 	s.mu.Unlock()
 	var photo geo.Photo
 	var ok bool
-	switch {
-	case number > 1:
-		photo, ok = s.take(context.Background(), region, s.cfg.Wait)
-	case began.IsZero(): // round 1 as the lobby ends: the photo ready now, else fetched
-		if photo, ok = s.take(context.Background(), region, 0); !ok {
-			photo, ok = s.fetch(chat, id, region)
+	if began.IsZero() { // else a fetch began, before a restart too, and goes on to the same limit
+		wait := s.cfg.between()
+		if number == 1 { // round 1 as the lobby ends: the photo ready now, else fetched
+			wait = 0
 		}
-	default:
-		photo, ok = s.fetch(chat, id, region)
+		photo, ok = s.take(context.Background(), region, wait)
+	}
+	if !ok {
+		photo, ok = s.fetch(chat, id, region, number)
 	}
 	s.mu.Lock()
 	r = s.rounds[chat]
@@ -424,17 +448,12 @@ func (s *server) nextRound(chat, id string, number int) {
 		return
 	}
 	if !ok {
-		if number == 1 {
-			s.noSpotLocked(r)
-		} else {
-			s.queue(addon.Op{Op: "post", Chat: chat, Text: fmt.Sprintf("I couldn't find a spot for round %d, so the game ends here.", number) + totals(r)})
-			s.endGame(r)
-		}
+		s.noSpotLocked(r, number)
 		s.mu.Unlock()
 		s.save()
 		return
 	}
-	if t := s.timers[chat]; t != nil && number == 1 { // fetchTimeUp's
+	if t := s.timers[chat]; t != nil { // fetchTimeUp's: between rounds, no other timer is set
 		t.Stop()
 		delete(s.timers, chat)
 	}
@@ -458,14 +477,14 @@ func (s *server) nextRound(chat, id string, number int) {
 	s.save()
 }
 
-// fetch waits for round 1's photo of the game id in chat until fetchMax
-// after the game began to (or its watch's end, if sooner), posting that it
-// is fetching if the wait begins now, as a lobby ends. At the limit,
-// fetchTimeUp calls the game off, which stops the wait.
-func (s *server) fetch(chat, id, region string) (geo.Photo, bool) {
+// fetch waits for round number's photo of the game id in chat until its
+// limit (fetchLimit), posting that it is fetching if the wait begins now:
+// as a lobby ends, or past a later round's grace. At the limit,
+// fetchTimeUp ends the game, which stops the wait.
+func (s *server) fetch(chat, id, region string, number int) (geo.Photo, bool) {
 	s.mu.Lock()
 	r := s.rounds[chat]
-	if r == nil || r.ID != id || r.Number != 0 || !r.Waiting {
+	if r == nil || r.ID != id || r.Number != number-1 || !r.Waiting {
 		s.mu.Unlock()
 		return geo.Photo{}, false
 	}
@@ -473,23 +492,29 @@ func (s *server) fetch(chat, id, region string) (geo.Photo, bool) {
 	starts := r.Fetch.IsZero()
 	if starts {
 		r.Fetch = now
-		s.queue(addon.Op{Op: "post", Chat: chat, Text: fetching(region)})
+		if r.fetchLimit().Sub(now) < startGrace { // the allowance is spent: no "Fetching" just to give up
+			r.Fetch = time.Time{}
+			s.mu.Unlock()
+			return geo.Photo{}, false
+		}
+		name := ""
+		if number > 1 {
+			name = roundName(r, number)
+		}
+		s.queue(addon.Op{Op: "post", Chat: chat, Text: fetching(region, name)})
 	}
-	limit := r.Fetch.Add(fetchMax)
-	if r.Until.Before(limit) {
-		limit = r.Until
-	}
+	limit := r.fetchLimit()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	s.fetches[id] = cancel
 	if t := s.timers[chat]; t != nil {
 		t.Stop()
 	}
-	s.timers[chat] = s.clock.AfterFunc(max(limit.Sub(now), 0), func() { s.fetchTimeUp(chat, id) })
+	s.timers[chat] = s.clock.AfterFunc(max(limit.Sub(now), 0), func() { s.fetchTimeUp(chat, id, number) })
 	s.mu.Unlock()
 	if starts {
 		s.save()
-		s.log.Printf("game %s fetching round 1's photo", id)
+		s.log.Printf("game %s fetching round %d's photo", id, number)
 	}
 	photo, ok := s.take(ctx, region, limit.Sub(now))
 	s.mu.Lock()
@@ -498,25 +523,40 @@ func (s *server) fetch(chat, id, region string) (geo.Photo, bool) {
 	return photo, ok
 }
 
-// fetchTimeUp calls off the game id in chat if it is still fetching round
-// 1's photo.
-func (s *server) fetchTimeUp(chat, id string) {
+// fetchLimit is when r's fetch, begun at Fetch, gives up: once the game
+// has fetched for fetchMax in all, or at its watch's end, if sooner.
+func (r *round) fetchLimit() time.Time {
+	limit := r.Fetch.Add(max(fetchMax-r.Fetched, 0))
+	if r.Until.Before(limit) {
+		limit = r.Until
+	}
+	return limit
+}
+
+// fetchTimeUp ends the game id in chat if it is still fetching round
+// number's photo.
+func (s *server) fetchTimeUp(chat, id string, number int) {
 	s.mu.Lock()
 	r := s.rounds[chat]
-	if r == nil || r.ID != id || r.Number != 0 || !r.Waiting {
+	if r == nil || r.ID != id || r.Number != number-1 || !r.Waiting {
 		s.mu.Unlock()
 		return
 	}
-	s.noSpotLocked(r)
+	s.noSpotLocked(r, number)
 	s.mu.Unlock()
 	s.save()
 }
 
-// noSpotLocked calls off r's game, which found no photo for round 1.
-// s.mu is held.
-func (s *server) noSpotLocked(r *round) {
-	s.queue(addon.Op{Op: "post", Chat: r.Chat, Text: noSpot(r.Region)})
-	s.log.Printf("game %s called off: no photo for round 1", r.ID)
+// noSpotLocked ends r's game, which found no photo for round number: for
+// round 1, calls it off; for a later one, with the totals so far. s.mu is
+// held.
+func (s *server) noSpotLocked(r *round, number int) {
+	if number == 1 {
+		s.queue(addon.Op{Op: "post", Chat: r.Chat, Text: noSpot(r.Region)})
+	} else {
+		s.queue(addon.Op{Op: "post", Chat: r.Chat, Text: fmt.Sprintf("I couldn't find a spot for %s, so the game ends here.", roundName(r, number)) + totals(r)})
+	}
+	s.log.Printf("game %s ended: no photo for round %d", r.ID, number)
 	s.endGame(r)
 }
 
@@ -533,6 +573,10 @@ func (s *server) openLocked(r *round, number int, photo geo.Photo) {
 		s.queue(addon.Op{Op: "post", Chat: chat, Text: fmt.Sprintf("No time is left for round %d, so the game ends here.", number) + totals(r)})
 		s.endGame(r)
 	default:
+		if !r.Fetch.IsZero() { // the fetch's time comes out of the game's allowance
+			r.Fetched += now.Sub(r.Fetch)
+			r.Fetch = time.Time{}
+		}
 		r.Number, r.Waiting = number, false
 		r.Started, r.Deadline = now, now.Add(length)
 		r.Answer, r.Place, r.Guesses = photo.At, photo.Place.Name, map[string]guess{}

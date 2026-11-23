@@ -25,7 +25,9 @@ the place and ranks players by how far off they were. A game is 3 rounds.
 - **DMs:** there is no lobby. The game starts at once, and a round ends
   as soon as you guess.
 - **No photo ready:** `/geo` says it's fetching one and posts round 1 once
-  found, or calls the game off after 5 minutes.
+  found, or calls the game off after 5 minutes. A later round does the
+  same ("🔎 Fetching round 2's spot…"); a game fetches for 5 minutes in
+  all, then ends with the scores so far.
 - **Answer:** send a location (Signal: **+** → Location; Telegram:
   📎 → Location), or type coordinates such as `-37.81, 144.96`.
 - **Points:** the nearest guess wins a round. Most round wins takes the
