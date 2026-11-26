@@ -3,7 +3,7 @@
 A geo guesser game for [signalbot](https://github.com/robdevops/signalbot).
 `/geo` posts a street-level photo, and players guess where it was taken by
 sending a location or typed coordinates. When time is up, the bot names
-the place and ranks players by how far off they were. A game is 3 rounds.
+the place and ranks players by how far off they were. A game is 5 rounds.
 
 ```
 /geo                 start a game (rounds of GEO_ROUND, default 3 minutes)
@@ -38,7 +38,7 @@ the place and ranks players by how far off they were. A game is 3 rounds.
   many rounds of what length, and round 1's photo follows 2 seconds
   later. A round ends as soon as you guess.
 - **Photos not ready:** the game starts once each round has its photo
-  ("🔎 Fetching spots for 3 rounds…"); after 5 minutes it plays the
+  ("🔎 Fetching spots for 5 rounds…"); after 5 minutes it plays the
   rounds it found, or is called off with none.
 - **Answer:** send a location (Signal: **+** → Location; Telegram:
   📎 → Location), or type coordinates such as `-37.81, 144.96`.

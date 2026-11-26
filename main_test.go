@@ -883,7 +883,7 @@ func TestNoPhotoAndRegions(t *testing.T) {
 func TestConfig(t *testing.T) {
 	env := func(m map[string]string) func(string) string { return func(k string) string { return m[k] } }
 	c, err := loadConfig(env(map[string]string{"GEO_STATE_DIR": "/x"}))
-	if err != nil || c.Round != 3*time.Minute || c.MemLimit != 200<<20 || c.Buffer != 4 || c.MinQuality != 0.5 || c.Keep != nil || c.grace != startGrace || c.gap != gapTime ||
+	if err != nil || c.Round != 3*time.Minute || c.MemLimit != 200<<20 || c.Buffer != gameRounds+1 || c.MinQuality != 0.5 || c.Keep != nil || c.grace != startGrace || c.gap != gapTime ||
 		c.Nominatim != geo.NominatimURL || c.Panoramax != geo.PanoramaxURL || c.Mapillary != geo.MapillaryURL || c.MaxAge < 10*365*24*time.Hour {
 		t.Errorf("defaults %+v, %v", c, err)
 	}

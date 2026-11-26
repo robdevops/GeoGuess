@@ -11,7 +11,7 @@ pin, confirm on Signal, and send), or typed coordinates such as
 `-37.81, 144.96`; when time is up the bot names the place and ranks
 players by how far off they were.
 
-A game is 3 rounds, 3 photos. A round ends at its time, or as soon as all
+A game is 5 rounds, 5 photos. A round ends at its time, or as soon as all
 the game's players have guessed (3s later, for guesses still on their
 way), so a game goes as fast as its players. Anyone else may still guess
 and score, but isn't waited for. Each round's results come out when it
@@ -29,7 +29,7 @@ without that ("Nobody pressed ▶️ in time, so the game is off." if 2
 had joined). On Telegram the bot sees reactions only as the group's admin,
 so without that nobody can join. In a DM there's no lobby: the game
 starts at once, `/geo` answering with the game's rounds and their length
-("🌍 **GeoGuess** · 3 rounds of 3 min: guess where each photo was
+("🌍 **GeoGuess** · 5 rounds of 3 min: guess where each photo was
 taken.") and round 1's photo following 2 seconds later, and a round ends
 as soon as you guess.
 
@@ -39,7 +39,7 @@ over. Start another with /geo." instead of the model's answer. The bot
 keeps this in memory only, so a restart forgets it.
 
 Best of 3 wins: the nearest guess wins a round, and whoever wins the most
-rounds wins the game, with points shown alongside. All 3 rounds are
+rounds wins the game, with points shown alongside. All 5 rounds are
 played. If the top players are tied on wins, a tie-breaker round follows,
 with the game's spare photo:
 anyone may guess, but only the tied players can win it, and it ends once
@@ -74,7 +74,7 @@ buttons (the bot says so in `initialize`), all in one row:
 it is saved as a reaction's is, and its pop-up is "You're in: 2 joined."
 (how many have joined), or "You're already in."; reactions still count,
 and taking one back leaves. The rest are the starter's. The rounds toggle has
-two settings: what the lobby opened with (3 rounds) and double that,
+two settings: what the lobby opened with (5 rounds) and double that,
 capped so the whole game is within 44 minutes; if the first is already
 the most, a press says "Already the most." and changes nothing. The
 round length is what `/geo` gives, or `GEO_ROUND`; there is no button for
@@ -102,10 +102,10 @@ again soon.
 
 A game never searches for a photo once it has begun. `/geo` reserves a
 photo for each of its rounds, and a spare for a tie-breaker (4 in all for
-3 rounds), from the stock of photos kept ready (below). With a photo for
+5 rounds), from the stock of photos kept ready (below). With a photo for
 each round in hand, or within about 3 seconds, the game starts as above.
 Otherwise, in a DM or a group without a lobby, `/geo` answers "🔎 Fetching
-spots for 3 rounds…"; in a lobby,
+spots for 5 rounds…"; in a lobby,
 `/geo` answers with the intro at once, the photos are gathered while
 players join, and if some are still missing
 when the countdown ends the bot posts "🔎 Still fetching: 2 of 3 spots
@@ -128,7 +128,7 @@ try again in a moment.
 ### The stock
 
 GeoGuess keeps photos ready, found ahead by one search at a time:
-`GEO_BUFFER` (default 4, a full game with its spare) for `GEO_REGIONS`,
+`GEO_BUFFER` (default 6, a full game with its spare) for `GEO_REGIONS`,
 and a full game's 4 for each `GEO_KEEP` region and for each of the 6 kinds
 of game (regions, as in `/geo AU,NZ`) most recently played in the last 7
 days, so after one `/geo AU` the next usually starts at once. The kinds
@@ -254,7 +254,7 @@ through the bot's proxy, and trusts its CA), and nothing else.
 | `GEO_REGIONS` | empty (world) | Continents (`europe`, `asia`, `africa`, `north-america`, `south-america`, `oceania`) or ISO country codes, comma-separated |
 | `GEO_MIN_QUALITY` | `0.5` | Minimum Mapillary `quality_score` (0 to 1), when a photo has one |
 | `GEO_MAX_AGE_YEARS` | `10` | Ignore older photos; more than 0, up to 100 |
-| `GEO_BUFFER` | `4` | Checked photos kept ready for `GEO_REGIONS` (1 to 20); 4 is a full game with its spare |
+| `GEO_BUFFER` | `6` | Checked photos kept ready for `GEO_REGIONS` (1 to 20); 6 is a full game with its spare |
 | `GEO_KEEP` | empty | Regions to always keep a full game's photos ready for, comma-separated, in `GEO_REGIONS`'s names: `AU,NZ` keeps a game's worth for `/geo AU` and for `/geo NZ`. Kept as the regions games used lately are (see [the stock](#the-stock)), but for good |
 | `GEO_NOMINATIM_URL` | `https://nominatim.openstreetmap.org` | Reverse geocoder for the place names; `https://` only, as it is sent each round's answer |
 | `GEO_PANORAMAX_URL` | `https://api.panoramax.xyz` | Panoramax API (a STAC catalogue), such as one instance's; `https://` only |
@@ -328,7 +328,7 @@ their cancellation, and the outbox the bot reads. GeoGuess adds:
   game, until 5s past its latest end, with `guard` "No hints during a
   round 😉" and `over` "That game is over. Start another with /geo.". In a
   DM, or a group without a lobby, the answer is the game's intro ("🌍
-  **GeoGuess** · 3 rounds of 3 min: …"), or, with photos missing, the
+  **GeoGuess** · 5 rounds of 3 min: …"), or, with photos missing, the
   "Fetching" text; round 1's photo always follows as a `post` with the
   image: 2s after the answer with the photos ready, else once they are
   in. In a group, if the bot says it takes `watchReactions`,

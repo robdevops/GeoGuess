@@ -151,7 +151,7 @@ const (
 	// may run, with the gap before each round's photo: with lobbyMax (or,
 	// without a lobby, fetchMax, the time to gather its photos), within the
 	// bot's default watch_max of 1h.
-	gameRounds = 3
+	gameRounds = 5
 	// gapTime is the pause between a round's results and the next photo,
 	// so players can read the results.
 	gapTime = 10 * time.Second
