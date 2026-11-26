@@ -19,8 +19,9 @@ ends, then, 10 seconds later so they can be read, the next photo, whose
 time starts then.
 
 In a group, a game starts with a lobby: react to `/geo`'s answer with any
-emoji to join (take the reaction back to leave). Whoever starts it must
-react too. It starts 30 seconds after the last player joins, once there
+emoji to join (take the reaction back to leave), or, where the lobby has
+buttons, press ✋ Ready, whose intro then says so instead. Whoever starts
+it must join too. It starts 30 seconds after the last player joins, once there
 are at least 2 of you, and is called off if fewer than 2 have joined after
 15 minutes. On Telegram the bot sees reactions only as the group's admin,
 so without that nobody can join. In a DM there's no lobby: the game
@@ -58,12 +59,17 @@ when the countdown ends; with fewer it says so and the lobby goes on.
 `/geo wait` (or ⏱ +30s) makes the lobby wait 30s longer per use, for the
 countdown running or one still to come, but never past the lobby's 15
 minutes; the extra wait is saved with the lobby. ✖️ Cancel calls the
-lobby off as `/geo end` does. The buttons, for the starter only, come
-under the lobby's message where the chat's network shows buttons (the bot
-says so in `initialize`); each press calls the bot-only tool `geo_press`
-with `start:`, `cancel:` or `wait:` and the game's ID, and its answer is
-the pop-up; under an older game, or once the lobby is over, a press
-does nothing. A second `/geo` in the lobby says a game is waiting for
+lobby off as `/geo end` does. The buttons come under the lobby's message
+where the chat's network shows buttons (the bot says so in
+`initialize`): ✋ Ready on a row of its own, for anyone, and under it
+the starter's ▶️ Start, ✖️ Cancel and ⏱ +30s. ✋ Ready is a reaction's
+join, by the presser's pseudonym: it restarts the countdown and is saved
+as a reaction's is, and its pop-up is "You're in: 2 joined." (how many
+have joined), or "You're already in."; reactions still count. Each
+press calls the bot-only tool `geo_press` with `ready:`, `start:`,
+`cancel:` or `wait:` and the game's ID, and its answer is the pop-up;
+under an older game, or once the lobby is over, a press does nothing but
+say so. A second `/geo` in the lobby says a game is waiting for
 players.
 
 The keys of the last 1,000 photos used are kept, so none comes round

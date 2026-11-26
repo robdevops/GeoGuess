@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -73,27 +74,151 @@ func TestLobbyButtons(t *testing.T) {
 	clk, c := lobbyClient(t, t.TempDir(), true)
 	r := c.geo("1m", from(clk, chat, alice))
 	id := r.Meta.Watch.ID
-	want := [][]addon.Button{{{Label: "▶️ Start", Data: "start:" + id}, {Label: "✖️ Cancel", Data: "cancel:" + id}, {Label: "⏱ +30s", Data: "wait:" + id}}}
+	want := [][]addon.Button{
+		{{Label: "✋ Ready", Data: "ready:" + id}},
+		{{Label: "▶️ Start", Data: "start:" + id}, {Label: "✖️ Cancel", Data: "cancel:" + id}, {Label: "⏱ +30s", Data: "wait:" + id}},
+	}
 	got, _ := json.Marshal(r.Meta.Buttons)
 	w, _ := json.Marshal(want)
 	if string(got) != string(w) || r.Meta.OnPress != "geo_press" {
 		t.Errorf("buttons %s, onPress %q", got, r.Meta.OnPress)
 	}
-	for _, b := range want[0] {
-		if len(b.Data) > 64 {
-			t.Errorf("%s: %d bytes", b.Data, len(b.Data))
+	for _, row := range want {
+		for _, b := range row {
+			if len(b.Data) > 64 {
+				t.Errorf("%s: %d bytes", b.Data, len(b.Data))
+			}
 		}
 	}
 	if !strings.Contains(words(r), "/geo start") || !strings.Contains(words(r), "/geo wait") {
 		t.Errorf("the intro doesn't give the typed commands: %q", words(r))
+	}
+	if !strings.Contains(words(r), "Press ✋ Ready to join**, whoever started it too") || strings.Contains(words(r), "React to this message") {
+		t.Errorf("the intro with buttons: %q", words(r))
 	}
 	if d := c.geo("1m", dmFrom(clk, "c_dm", alice)); d.Meta == nil || d.Meta.Buttons != nil || d.Meta.OnPress != "" {
 		t.Errorf("a DM has buttons: %+v", d.Meta)
 	}
 
 	clk, c = lobbyClient(t, t.TempDir(), false)
-	if r := c.geo("1m", from(clk, chat, alice)); r.Meta == nil || !r.Meta.Watch.Reactions || r.Meta.Buttons != nil || r.Meta.OnPress != "" {
+	r = c.geo("1m", from(clk, chat, alice))
+	if r.Meta == nil || !r.Meta.Watch.Reactions || r.Meta.Buttons != nil || r.Meta.OnPress != "" {
 		t.Errorf("buttons without the capability: %+v", r.Meta)
+	}
+	if !strings.Contains(words(r), "React to this message with any emoji to join**, whoever started it too") || strings.Contains(words(r), "Ready") {
+		t.Errorf("the intro without buttons: %q", words(r))
+	}
+}
+
+// joined is who has joined chat's lobby.
+func (s *server) joined(chat string) []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if r := s.rounds[chat]; r != nil {
+		return slices.Clone(r.Joined)
+	}
+	return nil
+}
+
+// ✋ Ready: anyone's join, the starter's too, counted as a reaction's;
+// twice is already in; with a reaction's join, also already in.
+func TestPressReady(t *testing.T) {
+	clk, c := lobbyClient(t, t.TempDir(), true)
+	id := c.lobby(clk, chat)
+	if got := c.press(clk, "ready:"+id, chat, bob); got != "You're in: 1 joined." {
+		t.Errorf("bob's ready: %q", got)
+	}
+	if got := c.press(clk, "ready:"+id, chat, bob); got != "You're already in." {
+		t.Errorf("bob again: %q", got)
+	}
+	join(c, clk, chat, "u_carol") // a reaction still counts
+	if got := c.press(clk, "ready:"+id, chat, "u_carol"); got != "You're already in." {
+		t.Errorf("carol, who reacted: %q", got)
+	}
+	if got := c.press(clk, "ready:"+id, chat, alice); got != "You're in: 3 joined." {
+		t.Errorf("alice, the starter: %q", got)
+	}
+	if j := c.s.joined(chat); !slices.Equal(j, []string{bob, "u_carol", alice}) || !c.s.inLobby(chat) {
+		t.Errorf("joined %v", j)
+	}
+	if got := c.press(clk, "ready:rold", chat, bob); got != "That game is over." {
+		t.Errorf("an older game's ready: %q", got)
+	}
+}
+
+// Two players by ✋ Ready, the lobby's timer starts the game with both,
+// lobbyWait after the last; then Ready says it has started, and after
+// the game that it is over. The joins are saved, as a reaction's are.
+func TestReadyStarts(t *testing.T) {
+	dir := t.TempDir()
+	clk, c := lobbyClient(t, dir, true)
+	id := c.lobby(clk, chat)
+	c.press(clk, "ready:"+id, chat, alice)
+	clk.Advance(10 * time.Second)
+	c.press(clk, "ready:"+id, chat, bob)
+	saved, err := os.ReadFile(filepath.Join(dir, "geo.json"))
+	if err != nil || !strings.Contains(string(saved), bob) {
+		t.Errorf("bob's join not saved: %v", err)
+	}
+	clk.Advance(lobbyWait - time.Second) // re-armed by bob's join
+	if !c.s.inLobby(chat) {
+		t.Fatal("started before lobbyWait after the last join")
+	}
+	clk.Advance(time.Second)
+	opened(t, c.s, chat, 1)
+	c.s.mu.Lock()
+	players := slices.Clone(c.s.rounds[chat].Players)
+	c.s.mu.Unlock()
+	if !slices.Equal(players, []string{alice, bob}) {
+		t.Errorf("players %v", players)
+	}
+	if got := c.press(clk, "ready:"+id, chat, "u_carol"); got != "That game has already started." {
+		t.Errorf("ready after the start: %q", got)
+	}
+	c.geo("end", from(clk, chat, alice))
+	if got := c.press(clk, "ready:"+id, chat, "u_carol"); got != "That game is over." {
+		t.Errorf("ready after the game: %q", got)
+	}
+}
+
+// A ✋ Ready racing the lobby's timer, or ▶️ Start, starts the game once,
+// and the player is either in it or told it has started.
+func TestReadyRaces(t *testing.T) {
+	for i := range 20 {
+		clk, c := lobbyClient(t, t.TempDir(), true)
+		id := c.lobby(clk, chat)
+		join(c, clk, chat, alice)
+		join(c, clk, chat, bob)
+		var wg sync.WaitGroup
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if i%2 == 0 {
+				clk.Advance(lobbyWait)
+			} else { // the start pressed: the tool's work, as the client is one caller at a time
+				cc := &addon.Context{Chat: chat, Sender: alice, Group: true}
+				c.s.lobbyAct(cc, "start", id, true)
+			}
+		}()
+		got := c.press(clk, "ready:"+id, chat, "u_carol")
+		wg.Wait()
+		if c.s.inLobby(chat) { // carol joined once the clock moved on: lobbyWait from her join
+			clk.Advance(lobbyWait)
+		}
+		opened(t, c.s, chat, 1)
+		c.s.mu.Lock()
+		players := slices.Clone(c.s.rounds[chat].Players)
+		c.s.mu.Unlock()
+		switch {
+		case got == "You're in: 3 joined." && len(players) == 3:
+		case got == "That game has already started." && len(players) == 2:
+		default:
+			t.Errorf("ready %q, players %v", got, players)
+		}
+		if n := c.photos(chat); n != 1 {
+			t.Fatalf("%d round 1 photos", n)
+		}
+		c.close()
 	}
 }
 
@@ -107,7 +232,7 @@ func TestPressStart(t *testing.T) {
 	if got := c.press(clk, "start:"+id, chat, bob); got != "Only the player who started this game can do that." {
 		t.Errorf("bob's press: %q", got)
 	}
-	if got := c.press(clk, "start:"+id, chat, alice); got != "Waiting for at least 2 players: react to join." {
+	if got := c.press(clk, "start:"+id, chat, alice); got != "Waiting for at least 2 players: press ✋ Ready to join." {
 		t.Errorf("alice alone: %q", got)
 	}
 	c.s.mu.Lock()

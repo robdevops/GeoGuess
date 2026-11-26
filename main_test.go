@@ -18,6 +18,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -34,13 +35,11 @@ type fakeClock struct {
 type fakeTimer struct {
 	at      time.Time
 	f       func()
-	stopped bool
+	stopped atomic.Bool // stopped under the server's lock while Advance reads it
 }
 
 func (t *fakeTimer) Stop() bool {
-	was := !t.stopped
-	t.stopped = true
-	return was
+	return !t.stopped.Swap(true)
 }
 
 func (c *fakeClock) Now() time.Time {
@@ -72,7 +71,7 @@ func (c *fakeClock) Advance(d time.Duration) {
 	c.mu.Unlock()
 	slices.SortStableFunc(due, func(a, b *fakeTimer) int { return a.at.Compare(b.at) })
 	for _, t := range due {
-		if !t.stopped {
+		if !t.stopped.Load() {
 			t.f()
 		}
 	}

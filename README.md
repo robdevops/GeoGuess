@@ -18,11 +18,15 @@ the place and ranks players by how far off they were. A game is 3 rounds.
 
 ## How to play
 
-- **Join:** in a group, react to `/geo`'s answer with any emoji. The
-  starter must react too. It starts 30s after the last join, once at
-  least 2 have joined. It is called off after 15 minutes without 2.
+- **Join:** in a group, press ✋ Ready under `/geo`'s answer (on
+  Telegram, Discord and Slack), or react to it with any emoji (on Signal,
+  and anywhere else too). The starter must join too. It starts 30s after
+  the last join, once at least 2 have joined. It is called off after 15
+  minutes without 2.
 - **Lobby buttons:** on Telegram, Discord and Slack, the lobby's message
-  has ▶️ Start, ✖️ Cancel and ⏱ +30s, for the starter only: start now
+  has ✋ Ready for anyone, the starter too, to join (each press its
+  player's own join), and under it ▶️ Start, ✖️ Cancel and ⏱ +30s, for
+  the starter only: start now
   (the press counts as their join, and needs 2 joined), call it off, or
   wait 30s longer per press (never past the 15 minutes). On Signal, type
   `/geo start`, `/geo end` or `/geo wait`.

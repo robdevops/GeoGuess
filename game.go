@@ -29,7 +29,8 @@ const (
 )
 
 // The lobby's buttons and their typed equivalents, /geo start, /geo end
-// and /geo wait: the starter's only.
+// and /geo wait: the starter's only; ✋ Ready, anyone's, is a reaction's
+// join.
 const (
 	notStarter = "Only the player who started this game can do that."
 	started    = "That game has already started."
@@ -39,7 +40,14 @@ const (
 	moreWait = 30 * time.Second
 	// pressTool is the tool the lobby's buttons call.
 	pressTool = "geo_press"
+	// alreadyIn is ✋ Ready's pop-up for a player who has joined.
+	alreadyIn = "You're already in."
 )
+
+// readyIn is ✋ Ready's pop-up for a join: how many have joined.
+func readyIn(n int) string {
+	return fmt.Sprintf("You're in: %d joined.", n)
+}
 
 // pin is the reaction to a recorded guess.
 const pin = "📍"
@@ -129,7 +137,7 @@ func (s *server) tools() []addon.Tool {
 		},
 		{
 			Name:        pressTool,
-			Description: "A press of a button under a game's lobby: start, cancel or wait.",
+			Description: "A press of a button under a game's lobby: ready, start, cancel or wait.",
 			Schema:      json.RawMessage(`{"type":"object","properties":{"press":{"type":"string"}},"required":["press"]}`),
 			Visibility:  []string{"bot"},
 			Call: func(_ context.Context, c *addon.Context, raw json.RawMessage) (addon.Result, error) {
@@ -282,13 +290,17 @@ func (s *server) start(ctx context.Context, c *addon.Context, length time.Durati
 		r.Lobby, r.Waiting, r.Joined, r.CallOff = true, false, nil, now.Add(lobbyMax)
 		r.Until = r.Until.Add(lobbyMax)
 		s.armLobby(r)
-		intro, meta, have := lobbyIntro(r), watchMeta(r, true), len(r.Photos)
-		if s.srv.Buttons() {
-			meta.Buttons = [][]addon.Button{{
-				{Label: "▶️ Start", Data: "start:" + r.ID},
-				{Label: "✖️ Cancel", Data: "cancel:" + r.ID},
-				{Label: "⏱ +30s", Data: "wait:" + r.ID},
-			}}
+		buttons := s.srv.Buttons()
+		intro, meta, have := lobbyIntro(r, buttons), watchMeta(r, true), len(r.Photos)
+		if buttons { // ✋ Ready for anyone, above the starter's row
+			meta.Buttons = [][]addon.Button{
+				{{Label: "✋ Ready", Data: "ready:" + r.ID}},
+				{
+					{Label: "▶️ Start", Data: "start:" + r.ID},
+					{Label: "✖️ Cancel", Data: "cancel:" + r.ID},
+					{Label: "⏱ +30s", Data: "wait:" + r.ID},
+				},
+			}
 			meta.OnPress = pressTool
 		}
 		s.mu.Unlock()
@@ -890,10 +902,16 @@ func (s *server) guess(c *addon.Context, msg string) addon.Result {
 	return addon.Result{Content: addon.Text("Recorded.").Content, Meta: &addon.ResultMeta{React: pin}}
 }
 
-// lobbyIntro is /geo's answer in a group: the game, and how to join.
-func lobbyIntro(r *round) string {
+// lobbyIntro is /geo's answer in a group: the game, and how to join: by
+// ✋ Ready where the lobby has buttons, else by a reaction (which still
+// counts with buttons, unsaid).
+func lobbyIntro(r *round, buttons bool) string {
+	how := "👋 **React to this message with any emoji to join**"
+	if buttons {
+		how = "👋 **Press ✋ Ready to join**"
+	}
 	return intro(r) + "\n" +
-		"👋 **React to this message with any emoji to join**, whoever started it too: the game starts 30 seconds after the last player joins, once at least 2 have; a round ends as soon as everyone who joined has guessed. " +
+		how + ", whoever started it too: the game starts 30 seconds after the last player joins, once at least 2 have; a round ends as soon as everyone who joined has guessed. " +
 		"The starter can start it now with /geo start, or wait 30s longer with /geo wait."
 }
 
@@ -917,8 +935,7 @@ func (s *server) reacted(c *addon.Context, removed bool) addon.Result {
 	in := slices.Contains(r.Joined, c.Sender)
 	switch {
 	case !removed && !in:
-		r.Joined = append(r.Joined, c.Sender)
-		r.LastJoin = s.clock.Now()
+		s.joinLocked(r, c.Sender)
 	case removed && in:
 		r.Joined = slices.DeleteFunc(r.Joined, func(u string) bool { return u == c.Sender })
 	default:
@@ -929,6 +946,18 @@ func (s *server) reacted(c *addon.Context, removed bool) addon.Result {
 	s.mu.Unlock()
 	s.save()
 	return addon.Text("Noted.")
+}
+
+// joinLocked adds who to r's lobby, if not yet in it, reporting whether
+// they joined: a reaction, ✋ Ready or the starter's ▶️ Start. The
+// caller re-arms the lobby (armLobby) or begins the game. s.mu is held.
+func (s *server) joinLocked(r *round, who string) bool {
+	if slices.Contains(r.Joined, who) {
+		return false
+	}
+	r.Joined = append(r.Joined, who)
+	r.LastJoin = s.clock.Now()
+	return true
 }
 
 // armLobby sets r's lobby timer: with enough players, to start lobbyWait
@@ -991,8 +1020,8 @@ func (s *server) beginLocked(r *round) {
 }
 
 // lobbyAct is the starter's start, cancel or wait for the lobby of the
-// game in c's chat: a press of one of its buttons (pressed, for the game
-// id), or /geo start or /geo wait. It answers in words: the press's
+// game in c's chat, or anyone's ready (a join): a press of one of its
+// buttons (pressed, for the game id), or /geo start or /geo wait. It answers in words: the press's
 // pop-up, or the command's answer. Its work is in memory and in the
 // outbox, so it answers at once, within a press's 5 seconds.
 func (s *server) lobbyAct(c *addon.Context, action, id string, pressed bool) string {
@@ -1011,6 +1040,16 @@ func (s *server) lobbyAct(c *addon.Context, action, id string, pressed bool) str
 	case !r.Lobby:
 		s.mu.Unlock()
 		return started
+	case action == "ready": // anyone's, as a reaction's join
+		if !s.joinLocked(r, c.Sender) {
+			s.mu.Unlock()
+			return alreadyIn
+		}
+		s.armLobby(r)
+		text := readyIn(len(r.Joined))
+		s.mu.Unlock()
+		s.save()
+		return text
 	case r.Starter != c.Sender:
 		s.mu.Unlock()
 		return notStarter
@@ -1018,16 +1057,17 @@ func (s *server) lobbyAct(c *addon.Context, action, id string, pressed bool) str
 	var text string
 	switch action {
 	case "start":
-		if !slices.Contains(r.Joined, c.Sender) { // the starter's press is their join
-			r.Joined = append(r.Joined, c.Sender)
-			r.LastJoin = s.clock.Now()
-		}
+		s.joinLocked(r, c.Sender) // the starter's press is their join
 		if len(r.Joined) >= minPlayers {
 			s.beginLocked(r)
 			text = "Starting!"
 		} else {
 			s.armLobby(r)
-			text = fmt.Sprintf("Waiting for at least %d players: react to join.", minPlayers)
+			how := "react to join"
+			if pressed {
+				how = "press ✋ Ready to join"
+			}
+			text = fmt.Sprintf("Waiting for at least %d players: %s.", minPlayers, how)
 		}
 	case "cancel": // as /geo end in the lobby, whose answer the chat sees
 		s.callOffLocked(r, "")
