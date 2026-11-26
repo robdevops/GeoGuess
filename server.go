@@ -89,7 +89,7 @@ type round struct {
 	LastJoin time.Time      `json:"lastJoin,omitempty"` // when the last player joined: the game starts lobbyWait after
 	CallOff  time.Time      `json:"callOff,omitempty"`  // when the lobby gives up with fewer than minPlayers
 	Extra    time.Duration  `json:"extra,omitempty"`    // the starter's extra wait (⏱ +30s, /geo wait), after lobbyWait, within CallOff
-	// Buttons marks a lobby with buttons: no timer starts it, only ▶️ Start
+	// Buttons marks a lobby with buttons: no timer starts it, only ▶️
 	// or /geo start; its toggle switches the rounds between BaseOf, what it
 	// opened with, and double that, within the game's limits.
 	Buttons bool `json:"buttons,omitempty"`

@@ -79,13 +79,13 @@ func rowsJSON(rows [][]addon.Button) string {
 // ready joined, the rounds toggle, Start if start, and Cancel.
 func lobbyRow(id string, ready int, rounds string, start bool) [][]addon.Button {
 	row := []addon.Button{
-		{Label: fmt.Sprintf("✋ Ready: %d", ready), Data: "ready:" + id},
+		{Label: fmt.Sprintf("✅ %d", ready), Data: "ready:" + id},
 		{Label: "Rounds: " + rounds, Data: "t1:" + id},
 	}
 	if start {
-		row = append(row, addon.Button{Label: "▶️ Start", Data: "start:" + id})
+		row = append(row, addon.Button{Label: "▶️", Data: "start:" + id})
 	}
-	return [][]addon.Button{append(row, addon.Button{Label: "✖️ Cancel", Data: "cancel:" + id})}
+	return [][]addon.Button{append(row, addon.Button{Label: "✖️", Data: "cancel:" + id})}
 }
 
 // buttonOps is the buttons ops in the outbox, from cursor.
@@ -121,11 +121,11 @@ func TestLobbyButtons(t *testing.T) {
 		}
 	}
 	w := words(r)
-	if !strings.Contains(w, "Press ✋ Ready to join**, whoever started it too") || !strings.Contains(w, "the starter presses ▶️ Start") ||
+	if !strings.Contains(w, "Press ✅ to join**, whoever started it too") || !strings.Contains(w, "the starter presses ▶️ when everyone's in (✖️ calls it off)") ||
 		!strings.Contains(w, "change the rounds with the buttons") || strings.Contains(w, "timer") || strings.Contains(strings.ToLower(w), "react") || strings.Contains(w, "/geo wait") {
 		t.Errorf("the intro with buttons: %q", w)
 	}
-	if got := words(c.geo("", from(clk, chat, bob))); got != "A game is waiting for players: press ✋ Ready under its message to join." {
+	if got := words(c.geo("", from(clk, chat, bob))); got != "A game is waiting for players: press ✅ under its message to join." {
 		t.Errorf("busy: %q", got)
 	}
 	if !strings.Contains(r.Meta.Watch.Until, "15:00:") && !strings.Contains(r.Meta.Watch.Until, "14:59:") { // lobbyMax and maxGame from 14:00
@@ -140,7 +140,7 @@ func TestLobbyButtons(t *testing.T) {
 	if r.Meta == nil || !r.Meta.Watch.Reactions || r.Meta.Buttons != nil || r.Meta.OnPress != "" {
 		t.Errorf("buttons without the capability: %+v", r.Meta)
 	}
-	if !strings.Contains(words(r), "React to this message with any emoji to join**, whoever started it too") || strings.Contains(words(r), "Ready") ||
+	if !strings.Contains(words(r), "React to this message with any emoji to join**, whoever started it too") || strings.Contains(words(r), "✅") ||
 		!strings.Contains(words(r), "/geo start") || !strings.Contains(words(r), "/geo wait") {
 		t.Errorf("the intro without buttons: %q", words(r))
 	}
@@ -159,7 +159,7 @@ func (s *server) joined(chat string) []string {
 	return nil
 }
 
-// ✋ Ready: anyone's join, the starter's too, counted as a reaction's;
+// ✅: anyone's join, the starter's too, counted as a reaction's;
 // twice is already in; with a reaction's join, also already in.
 func TestPressReady(t *testing.T) {
 	clk, c := lobbyClient(t, t.TempDir(), true)
@@ -185,9 +185,9 @@ func TestPressReady(t *testing.T) {
 	}
 }
 
-// Each join, by ✋ Ready or a reaction, and each leave re-queue the
-// lobby's buttons for its watch, still one row: ▶️ Start appears with 2
-// joined, and goes with fewer. No timer starts the game: ▶️ Start does,
+// Each join, by ✅ or a reaction, and each leave re-queue the
+// lobby's buttons for its watch, still one row: ▶️ appears with 2
+// joined, and goes with fewer. No timer starts the game: ▶️ does,
 // with those who joined. Then Ready says it has started, and after the
 // game that it is over. The joins are saved, as a reaction's are.
 func TestReadyRows(t *testing.T) {
@@ -241,7 +241,7 @@ func TestReadyRows(t *testing.T) {
 	}
 }
 
-// A ✋ Ready racing ▶️ Start starts the game once, and the player is
+// A ✅ racing ▶️ starts the game once, and the player is
 // either in it or told it has started.
 func TestReadyRaces(t *testing.T) {
 	for range 20 {
@@ -276,7 +276,7 @@ func TestReadyRaces(t *testing.T) {
 	}
 }
 
-// ▶️ Start: the starter's only; their press is their join; with 2 joined
+// ▶️: the starter's only; their press is their join; with 2 joined
 // the game starts at once, round 1's photo following; with fewer the lobby
 // goes on. After the start, and under an older game's lobby, a press does
 // nothing.
@@ -286,7 +286,7 @@ func TestPressStart(t *testing.T) {
 	if got := c.press(clk, "start:"+id, chat, bob); got != "Only the player who started this game can do that." {
 		t.Errorf("bob's press: %q", got)
 	}
-	if got := c.press(clk, "start:"+id, chat, alice); got != "Waiting for at least 2 players: press ✋ Ready to join." {
+	if got := c.press(clk, "start:"+id, chat, alice); got != "Waiting for at least 2 players: press ✅ to join." {
 		t.Errorf("alice alone: %q", got)
 	}
 	c.s.mu.Lock()
@@ -331,7 +331,7 @@ func TestPressStart(t *testing.T) {
 	}
 }
 
-// /geo start is ▶️ Start typed, by the same rules.
+// /geo start is ▶️ typed, by the same rules.
 func TestTypedStart(t *testing.T) {
 	clk, c := lobbyClient(t, t.TempDir(), false)
 	if got := words(c.geo("start", from(clk, chat, alice))); got != noRound {
@@ -379,7 +379,7 @@ func TestPressStartFetching(t *testing.T) {
 	opened(t, c.s, chat, 1)
 }
 
-// ✖️ Cancel: the starter's only; it calls the lobby off as /geo end does,
+// ✖️: the starter's only; it calls the lobby off as /geo end does,
 // saying so in the chat; /geo stop and /geo end still do.
 func TestPressCancel(t *testing.T) {
 	clk, c := lobbyClient(t, t.TempDir(), true)
@@ -422,10 +422,10 @@ func TestPressCancel(t *testing.T) {
 func TestPressWait(t *testing.T) {
 	clk, c := lobbyClient(t, t.TempDir(), true)
 	id := c.lobby(clk, chat)
-	if got := words(c.geo("wait", from(clk, chat, alice))); got != "There's no countdown: the starter presses ▶️ Start when everyone's in." {
+	if got := words(c.geo("wait", from(clk, chat, alice))); got != "There's no countdown: the starter presses ▶️ when everyone's in." {
 		t.Errorf("/geo wait with buttons: %q", got)
 	}
-	if got := c.press(clk, "wait:"+id, chat, alice); got != "There's no countdown: the starter presses ▶️ Start when everyone's in." {
+	if got := c.press(clk, "wait:"+id, chat, alice); got != "There's no countdown: the starter presses ▶️ when everyone's in." {
 		t.Errorf("a +30s press with buttons: %q", got)
 	}
 	c.close()
@@ -631,14 +631,14 @@ func TestTogglesCapped(t *testing.T) {
 }
 
 // With buttons the lobby is called off after lobbyMax, whoever joined;
-// with 2 joined and no ▶️ Start, it says nobody started it.
+// with 2 joined and no ▶️, it says nobody started it.
 func TestButtonsCallOff(t *testing.T) {
 	for _, tc := range []struct {
 		joins []string
 		why   string
 	}{
 		{[]string{alice}, "Not enough players joined, so the game is off."},
-		{[]string{alice, bob}, "Nobody pressed ▶️ Start in time, so the game is off."},
+		{[]string{alice, bob}, "Nobody pressed ▶️ in time, so the game is off."},
 	} {
 		clk, c := lobbyClient(t, t.TempDir(), true)
 		id := c.lobby(clk, chat)
@@ -665,11 +665,11 @@ func TestButtonsCallOff(t *testing.T) {
 }
 
 // Typed /geo start with too few, on a network with buttons, says to press
-// ✋ Ready, and the starter's join re-queues the buttons.
+// ✅, and the starter's join re-queues the buttons.
 func TestTypedStartButtons(t *testing.T) {
 	clk, c := lobbyClient(t, t.TempDir(), true)
 	id := c.lobby(clk, chat)
-	if got := words(c.geo("start", from(clk, chat, alice))); got != "Waiting for at least 2 players: press ✋ Ready to join." {
+	if got := words(c.geo("start", from(clk, chat, alice))); got != "Waiting for at least 2 players: press ✅ to join." {
 		t.Errorf("alone: %q", got)
 	}
 	ops := c.buttonOps("0")

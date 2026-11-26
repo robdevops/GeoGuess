@@ -20,12 +20,12 @@ time starts then.
 
 In a group, a game starts with a lobby: react to `/geo`'s answer with any
 emoji to join (take the reaction back to leave), or, where the lobby has
-buttons, press ✋ Ready, whose intro then says so instead. Whoever starts
+buttons, press ✅, whose intro then says so instead. Whoever starts
 it must join too. Without buttons it starts 30 seconds after the last
 player joins, once there are at least 2 of you, and is called off if fewer
 than 2 have joined after 15 minutes; with buttons only the starter's ▶️
-Start (or `/geo start`) starts it, and it is called off after 15 minutes
-without that ("Nobody pressed ▶️ Start in time, so the game is off." if 2
+(or `/geo start`) starts it, and it is called off after 15 minutes
+without that ("Nobody pressed ▶️ in time, so the game is off." if 2
 had joined). On Telegram the bot sees reactions only as the group's admin,
 so without that nobody can join. In a DM there's no lobby: the game
 starts at once, `/geo` answering with the game's rounds and their length
@@ -56,10 +56,10 @@ A length and regions combine, as in `/geo europe 90s`.
 calls the game off. `/geo skip` goes on to the next round without
 scoring this one. Only the player who started the game may do either.
 
-In the lobby, the starter's `/geo start` (or the ▶️ Start button) starts
+In the lobby, the starter's `/geo start` (or the ▶️ button) starts
 the game at once, counting as their join, once at least 2 have joined, as
 when the countdown ends; with fewer it says so ("Waiting for at least 2
-players: press ✋ Ready to join." with buttons, else "…: react to join.")
+players: press ✅ to join." with buttons, else "…: react to join.")
 and the lobby goes on. On Signal, `/geo wait` makes the lobby wait 30s
 longer per use, for the countdown running or one still to come, but never
 past the lobby's 15 minutes; the extra wait is saved with the lobby. With
@@ -68,9 +68,9 @@ buttons there is no countdown, and `/geo wait` says so.
 The buttons come under the lobby's message where the chat's network shows
 buttons (the bot says so in `initialize`), all in one row:
 
-    [✋ Ready: N] [Rounds: 3] [▶️ Start] [✖️ Cancel]
+    [✅ N] [Rounds: 3] [▶️] [✖️]
 
-✋ Ready, for anyone, is a reaction's join, by the presser's pseudonym:
+✅, for anyone, is a reaction's join, by the presser's pseudonym:
 it is saved as a reaction's is, and its pop-up is "You're in: 2 joined."
 (how many have joined), or "You're already in."; reactions still count,
 and taking one back leaves. The rest are the starter's. The rounds toggle has
@@ -82,8 +82,8 @@ it.
 A press's pop-up is the new setting ("Rounds: 6"), which the game that
 starts plays: more rounds reserve more photos, gathered while the lobby
 lasts if the stock lacks them (for up to 5 minutes from the press, never
-past the lobby's 15), and fewer return the spares to the stock. ▶️ Start
-shows once 2 have joined. ✖️ Cancel calls the lobby off as `/geo end`
+past the lobby's 15), and fewer return the spares to the stock. ▶️
+shows once 2 have joined. ✖️ calls the lobby off as `/geo end`
 does. Every join, leave or toggle queues a `buttons` op for the lobby's
 watch with the row as it now is, which replaces the buttons under the
 intro, keeping its text (so the intro still gives the opening rounds and
@@ -93,7 +93,7 @@ is the pop-up; under an older game, or once the lobby is over, a press
 (an older lobby's `wait:` too) does nothing but say so. The answer timer
 toggle (`t2:`) is gone: a press of one under a lobby from before says
 "That button is gone." and changes nothing. A second `/geo` in the lobby says a game is waiting for players,
-and with buttons to press ✋ Ready.
+and with buttons to press ✅.
 
 The keys of the last 1,000 photos used are kept, so none comes round
 again soon.

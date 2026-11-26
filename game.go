@@ -29,7 +29,7 @@ const (
 )
 
 // The lobby's buttons and their typed equivalents, /geo start, /geo end
-// and /geo wait (on Signal): the starter's only; ✋ Ready, anyone's, is a
+// and /geo wait (on Signal): the starter's only; ✅, anyone's, is a
 // reaction's join.
 const (
 	notStarter = "Only the player who started this game can do that."
@@ -40,7 +40,7 @@ const (
 	moreWait = 30 * time.Second
 	// pressTool is the tool the lobby's buttons call.
 	pressTool = "geo_press"
-	// alreadyIn is ✋ Ready's pop-up for a player who has joined.
+	// alreadyIn is ✅'s pop-up for a player who has joined.
 	alreadyIn = "You're already in."
 	// alreadyMost is a toggle's pop-up when its setting can't go higher.
 	alreadyMost = "Already the most."
@@ -48,10 +48,10 @@ const (
 	// under an older lobby.
 	buttonGone = "That button is gone."
 	// noCountdown is /geo wait in a lobby with buttons, which no timer starts.
-	noCountdown = "There's no countdown: the starter presses ▶️ Start when everyone's in."
+	noCountdown = "There's no countdown: the starter presses ▶️ when everyone's in."
 )
 
-// readyIn is ✋ Ready's pop-up for a join: how many have joined.
+// readyIn is ✅'s pop-up for a join: how many have joined.
 func readyIn(n int) string {
 	return fmt.Sprintf("You're in: %d joined.", n)
 }
@@ -224,7 +224,7 @@ func (s *server) command(ctx context.Context, c *addon.Context, args string) add
 // busy is the answer to /geo while a game is on.
 func busy(r *round, now time.Time) addon.Result {
 	if r.Lobby && r.Buttons {
-		return addon.Text("A game is waiting for players: press ✋ Ready under its message to join.")
+		return addon.Text("A game is waiting for players: press ✅ under its message to join.")
 	}
 	if r.Lobby {
 		return addon.Text("A game is waiting for players: react to its message to join, or /geo start.")
@@ -309,7 +309,7 @@ func (s *server) start(ctx context.Context, c *addon.Context, length time.Durati
 	if lobby { // players join by reacting to the intro first; photos are gathered meanwhile, until GiveUp, within lobbyMax
 		r.Lobby, r.Waiting, r.Joined, r.CallOff = true, false, nil, now.Add(lobbyMax)
 		r.Until = r.Until.Add(lobbyMax)
-		if s.srv.Buttons() { // started by ▶️ Start alone; the watch has room for the toggles' longest game
+		if s.srv.Buttons() { // started by ▶️ alone; the watch has room for the toggles' longest game
 			r.Buttons, r.BaseOf = true, of
 			r.Until = r.CallOff.Add(maxGame)
 		}
@@ -937,12 +937,12 @@ func (s *server) guess(c *addon.Context, msg string) addon.Result {
 }
 
 // lobbyIntro is /geo's answer in a group: the game, and how to join: by
-// ✋ Ready where the lobby has buttons, and the starter starts it with ▶️
-// Start; else by a reaction, and it starts by itself.
+// ✅ where the lobby has buttons, and the starter starts it with ▶️;
+// else by a reaction, and it starts by itself.
 func lobbyIntro(r *round) string {
 	if r.Buttons { // a reaction still counts, unsaid
 		return intro(r) + "\n" +
-			"👋 **Press ✋ Ready to join**, whoever started it too. When everyone's in, the starter presses ▶️ Start, and can change the rounds with the buttons first. " +
+			"👋 **Press ✅ to join**, whoever started it too; the starter presses ▶️ when everyone's in (✖️ calls it off), and can change the rounds with the buttons first. " +
 			"A round ends as soon as everyone who joined has guessed."
 	}
 	return intro(r) + "\n" +
@@ -950,18 +950,17 @@ func lobbyIntro(r *round) string {
 		"The starter can start it now with /geo start, or wait 30s longer with /geo wait."
 }
 
-// lobbyRows is the buttons under a lobby with them, in one row: ✋ Ready
-// with how many have joined, the rounds toggle, ▶️
-// Start once enough have joined, and ✖️ Cancel.
+// lobbyRows is the buttons under a lobby with them, in one row: ✅
+// with how many have joined, the rounds toggle, ▶️ once enough have joined, and ✖️.
 func lobbyRows(r *round) [][]addon.Button {
 	row := []addon.Button{
-		{Label: fmt.Sprintf("✋ Ready: %d", len(r.Joined)), Data: "ready:" + r.ID},
+		{Label: fmt.Sprintf("✅ %d", len(r.Joined)), Data: "ready:" + r.ID},
 		{Label: fmt.Sprintf("Rounds: %d", r.of()), Data: "t1:" + r.ID},
 	}
 	if len(r.Joined) >= minPlayers {
-		row = append(row, addon.Button{Label: "▶️ Start", Data: "start:" + r.ID})
+		row = append(row, addon.Button{Label: "▶️", Data: "start:" + r.ID})
 	}
-	return [][]addon.Button{append(row, addon.Button{Label: "✖️ Cancel", Data: "cancel:" + r.ID})}
+	return [][]addon.Button{append(row, addon.Button{Label: "✖️", Data: "cancel:" + r.ID})}
 }
 
 // buttonsLocked queues the buttons for r's lobby as they now are, if it
@@ -1056,7 +1055,7 @@ func (s *server) reacted(c *addon.Context, removed bool) addon.Result {
 }
 
 // joinLocked adds who to r's lobby, if not yet in it, reporting whether
-// they joined: a reaction, ✋ Ready or the starter's ▶️ Start. The
+// they joined: a reaction, ✅ or the starter's ▶️. The
 // caller re-arms the lobby (armLobby) or begins the game. s.mu is held.
 func (s *server) joinLocked(r *round, who string) bool {
 	if slices.Contains(r.Joined, who) {
@@ -1068,7 +1067,7 @@ func (s *server) joinLocked(r *round, who string) bool {
 }
 
 // armLobby sets r's lobby timer: with enough players, to start lobbyWait
-// after the last join; else, or with buttons, where only ▶️ Start starts
+// after the last join; else, or with buttons, where only ▶️ starts
 // it, to call the game off at CallOff. s.mu is held.
 func (s *server) armLobby(r *round) {
 	at := r.CallOff
@@ -1090,7 +1089,7 @@ func (s *server) armLobby(r *round) {
 		case len(r.Joined) < minPlayers && !now.Before(r.CallOff):
 			s.callOffLocked(r, "Not enough players joined, so the game is off.")
 		case r.Buttons && !now.Before(r.CallOff):
-			s.callOffLocked(r, "Nobody pressed ▶️ Start in time, so the game is off.")
+			s.callOffLocked(r, "Nobody pressed ▶️ in time, so the game is off.")
 		default:
 			s.armLobby(r)
 		}
@@ -1116,7 +1115,7 @@ func startAt(r *round) time.Time {
 
 // beginLocked ends r's lobby and starts its game with those who joined:
 // round 1's photo comes now, with no pause, if the game has its photos,
-// else once it has them. The lobby's timer, the ▶️ Start button and /geo
+// else once it has them. The lobby's timer, the ▶️ button and /geo
 // start all come here, under s.mu, so a game starts once. s.mu is held.
 func (s *server) beginLocked(r *round) {
 	r.Lobby, r.Players = false, slices.Clone(r.Joined)
@@ -1183,7 +1182,7 @@ func (s *server) lobbyAct(c *addon.Context, action, id string, pressed bool) str
 			}
 			how := "react to join"
 			if pressed || r.Buttons {
-				how = "press ✋ Ready to join"
+				how = "press ✅ to join"
 			}
 			text = fmt.Sprintf("Waiting for at least %d players: %s.", minPlayers, how)
 		}

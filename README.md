@@ -18,18 +18,18 @@ the place and ranks players by how far off they were. A game is 3 rounds.
 
 ## How to play
 
-- **Join:** in a group, press ✋ Ready under `/geo`'s answer (on
+- **Join:** in a group, press ✅ under `/geo`'s answer (on
   Telegram, Discord and Slack), or react to it with any emoji (on Signal,
   and anywhere else too). The starter must join too. On Signal it starts
   30s after the last join, once at least 2 have joined; with buttons only
-  the starter's ▶️ Start starts it. It is called off after 15 minutes
+  the starter's ▶️ starts it. It is called off after 15 minutes
   without starting.
 - **Lobby buttons:** on Telegram, Discord and Slack, the lobby's message
-  has one row: `✋ Ready: N` for anyone, the starter too, to join (N is
+  has one row: `✅ N` for anyone, the starter too, to join (N is
   how many have), then for the starter only `Rounds: 3`, which switches
   between what `/geo` opened with and double that (within 44 minutes a
-  game; at the most, "Already the most."), `▶️ Start` once 2 have joined
-  (the press counts as their join), and `✖️ Cancel`. The round length is
+  game; at the most, "Already the most."), `▶️` once 2 have joined
+  (the press counts as their join), and `✖️`. The round length is
   what `/geo` (or `GEO_ROUND`) gives. The row updates with each join and
   change. On Signal, type `/geo start`, `/geo end` or `/geo wait`.
 - **Telegram:** the bot sees reactions only as the group's admin. With
