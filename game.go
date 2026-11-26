@@ -44,6 +44,9 @@ const (
 	alreadyIn = "You're already in."
 	// alreadyMost is a toggle's pop-up when its setting can't go higher.
 	alreadyMost = "Already the most."
+	// buttonGone is the pop-up of the answer timer toggle, gone, pressed
+	// under an older lobby.
+	buttonGone = "That button is gone."
 	// noCountdown is /geo wait in a lobby with buttons, which no timer starts.
 	noCountdown = "There's no countdown: the starter presses ▶️ when everyone's in."
 )
@@ -148,7 +151,7 @@ func (s *server) tools() []addon.Tool {
 		},
 		{
 			Name:        pressTool,
-			Description: "A press of a button under a game's lobby: ready, the rounds or interval toggles, start or cancel.",
+			Description: "A press of a button under a game's lobby: ready, the rounds toggle, start or cancel.",
 			Schema:      json.RawMessage(`{"type":"object","properties":{"press":{"type":"string"}},"required":["press"]}`),
 			Visibility:  []string{"bot"},
 			Call: func(_ context.Context, c *addon.Context, raw json.RawMessage) (addon.Result, error) {
@@ -307,7 +310,7 @@ func (s *server) start(ctx context.Context, c *addon.Context, length time.Durati
 		r.Lobby, r.Waiting, r.Joined, r.CallOff = true, false, nil, now.Add(lobbyMax)
 		r.Until = r.Until.Add(lobbyMax)
 		if s.srv.Buttons() { // started by ▶️ alone; the watch has room for the toggles' longest game
-			r.Buttons, r.BaseOf, r.BaseLength = true, of, length
+			r.Buttons, r.BaseOf = true, of
 			r.Until = r.CallOff.Add(maxGame)
 		}
 		s.armLobby(r)
@@ -939,7 +942,7 @@ func (s *server) guess(c *addon.Context, msg string) addon.Result {
 func lobbyIntro(r *round) string {
 	if r.Buttons { // a reaction still counts, unsaid
 		return intro(r) + "\n" +
-			"👋 **Press ✅ to join**, whoever started it too; the starter presses ▶️ when everyone's in (✖️ calls it off), and can change the rounds and the interval (each round's answer time) with the buttons first. " +
+			"👋 **Press ✅ to join**, whoever started it too; the starter presses ▶️ when everyone's in (✖️ calls it off), and can change the rounds with the buttons first. " +
 			"A round ends as soon as everyone who joined has guessed."
 	}
 	return intro(r) + "\n" +
@@ -948,13 +951,11 @@ func lobbyIntro(r *round) string {
 }
 
 // lobbyRows is the buttons under a lobby with them, in one row: ✅
-// with how many have joined, the rounds and interval toggles, ▶️ once
-// enough have joined, and ✖️.
+// with how many have joined, the rounds toggle, ▶️ once enough have joined, and ✖️.
 func lobbyRows(r *round) [][]addon.Button {
 	row := []addon.Button{
 		{Label: fmt.Sprintf("✅ %d", len(r.Joined)), Data: "ready:" + r.ID},
 		{Label: fmt.Sprintf("Rounds: %d", r.of()), Data: "t1:" + r.ID},
-		{Label: intervalLabel(r.Length), Data: "t2:" + r.ID},
 	}
 	if len(r.Joined) >= minPlayers {
 		row = append(row, addon.Button{Label: "▶️", Data: "start:" + r.ID})
@@ -978,26 +979,6 @@ func mostRounds(length, gap time.Duration) int {
 		n++
 	}
 	return n
-}
-
-// longestRound is the longest round, up to maxRound, a game of of rounds
-// may have within maxGame: whole minutes, or seconds under one.
-func longestRound(of int, gap time.Duration) time.Duration {
-	slots := time.Duration(of + 1)
-	if of == 1 {
-		slots = 1
-	}
-	d := min(maxGame/slots-settle-gap, maxRound)
-	if d >= time.Minute {
-		return d.Truncate(time.Minute)
-	}
-	return d.Truncate(time.Second)
-}
-
-// intervalLabel is the interval toggle's label and pop-up: a round's
-// answer time, always in whole seconds ("Interval: 180s").
-func intervalLabel(d time.Duration) string {
-	return fmt.Sprintf("Interval: %ds", int(d.Round(time.Second)/time.Second))
 }
 
 // toggleRoundsLocked switches r's lobby's rounds between what it opened
@@ -1037,26 +1018,6 @@ func (s *server) toggleRoundsLocked(r *round) string {
 	}
 	s.buttonsLocked(r)
 	return fmt.Sprintf("Rounds: %d", next)
-}
-
-// toggleLengthLocked switches r's lobby's round length (the interval)
-// between what it opened with and double that, at most longestRound: its
-// pop-up. s.mu is held.
-func (s *server) toggleLengthLocked(r *round) string {
-	base := r.BaseLength
-	if base <= 0 { // a lobby saved before it was kept
-		base = r.Length
-	}
-	next := base
-	if r.Length == base {
-		next = min(2*base, longestRound(r.of(), s.cfg.gap))
-		if next <= base {
-			return alreadyMost
-		}
-	}
-	r.Length = next
-	s.buttonsLocked(r)
-	return intervalLabel(next)
 }
 
 // intro is the game's first line: its rounds and their length.
@@ -1167,9 +1128,9 @@ func (s *server) beginLocked(r *round) {
 	s.readyLocked(r, true)
 }
 
-// lobbyAct is the starter's start, cancel, wait or toggle (t1, the
-// rounds; t2, the interval) for the lobby of the game in c's chat, or
-// anyone's ready (a join): a press of one of its buttons (pressed, for the
+// lobbyAct is the starter's start, cancel, wait or rounds toggle (t1)
+// for the lobby of the game in c's chat, or anyone's ready (a join), or
+// t2, the answer timer toggle under an older lobby, now gone: a press of one of its buttons (pressed, for the
 // game id), or /geo start or /geo wait. It answers in words: the press's
 // pop-up, or the command's answer. Its work is in memory and in the
 // outbox, so it answers at once, within a press's 5 seconds.
@@ -1189,6 +1150,9 @@ func (s *server) lobbyAct(c *addon.Context, action, id string, pressed bool) str
 	case !r.Lobby:
 		s.mu.Unlock()
 		return started
+	case action == "t2": // the answer timer toggle, under an older lobby, is gone: anyone's press changes nothing
+		s.mu.Unlock()
+		return buttonGone
 	case action == "ready": // anyone's, as a reaction's join
 		if !s.joinLocked(r, c.Sender) {
 			s.mu.Unlock()
@@ -1232,16 +1196,12 @@ func (s *server) lobbyAct(c *addon.Context, action, id string, pressed bool) str
 			return noCountdown
 		}
 		text = s.waitLocked(r)
-	case "t1", "t2":
+	case "t1":
 		if !r.Buttons {
 			s.mu.Unlock()
 			return ""
 		}
-		if action == "t1" {
-			text = s.toggleRoundsLocked(r)
-		} else {
-			text = s.toggleLengthLocked(r)
-		}
+		text = s.toggleRoundsLocked(r)
 	default:
 		s.mu.Unlock()
 		return ""
