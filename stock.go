@@ -273,11 +273,19 @@ func (s *server) reserveLocked(r *round) {
 // were found, then offers them to the games still gathering photos. s.mu
 // is held.
 func (s *server) restockLocked(r *round) {
-	if len(r.Photos) == 0 {
+	photos := r.Photos
+	r.Photos = nil
+	s.unreserveLocked(photos)
+}
+
+// unreserveLocked returns photos a game no longer needs to the stock, in
+// the order they were found, then offers them to the games still gathering
+// photos. s.mu is held.
+func (s *server) unreserveLocked(photos []kept) {
+	if len(photos) == 0 {
 		return
 	}
-	s.stock = append(s.stock, r.Photos...)
-	r.Photos = nil
+	s.stock = append(s.stock, photos...)
 	slices.SortStableFunc(s.stock, func(a, b kept) int { return a.Found.Compare(b.Found) })
 	for _, g := range s.gatherers() {
 		s.reserveLocked(g)

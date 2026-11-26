@@ -21,9 +21,12 @@ time starts then.
 In a group, a game starts with a lobby: react to `/geo`'s answer with any
 emoji to join (take the reaction back to leave), or, where the lobby has
 buttons, press ✋ Ready, whose intro then says so instead. Whoever starts
-it must join too. It starts 30 seconds after the last player joins, once there
-are at least 2 of you, and is called off if fewer than 2 have joined after
-15 minutes. On Telegram the bot sees reactions only as the group's admin,
+it must join too. Without buttons it starts 30 seconds after the last
+player joins, once there are at least 2 of you, and is called off if fewer
+than 2 have joined after 15 minutes; with buttons only the starter's ▶️
+Start (or `/geo start`) starts it, and it is called off after 15 minutes
+without that ("Nobody pressed ▶️ Start in time, so the game is off." if 2
+had joined). On Telegram the bot sees reactions only as the group's admin,
 so without that nobody can join. In a DM there's no lobby: the game
 starts at once, `/geo` answering with the game's rounds and their length
 ("🌍 **GeoGuess** · 3 rounds of 3 min: guess where each photo was
@@ -55,22 +58,40 @@ scoring this one. Only the player who started the game may do either.
 
 In the lobby, the starter's `/geo start` (or the ▶️ Start button) starts
 the game at once, counting as their join, once at least 2 have joined, as
-when the countdown ends; with fewer it says so and the lobby goes on.
-`/geo wait` (or ⏱ +30s) makes the lobby wait 30s longer per use, for the
-countdown running or one still to come, but never past the lobby's 15
-minutes; the extra wait is saved with the lobby. ✖️ Cancel calls the
-lobby off as `/geo end` does. The buttons come under the lobby's message
-where the chat's network shows buttons (the bot says so in
-`initialize`): ✋ Ready on a row of its own, for anyone, and under it
-the starter's ▶️ Start, ✖️ Cancel and ⏱ +30s. ✋ Ready is a reaction's
-join, by the presser's pseudonym: it restarts the countdown and is saved
-as a reaction's is, and its pop-up is "You're in: 2 joined." (how many
-have joined), or "You're already in."; reactions still count. Each
-press calls the bot-only tool `geo_press` with `ready:`, `start:`,
-`cancel:` or `wait:` and the game's ID, and its answer is the pop-up;
-under an older game, or once the lobby is over, a press does nothing but
-say so. A second `/geo` in the lobby says a game is waiting for
-players.
+when the countdown ends; with fewer it says so ("Waiting for at least 2
+players: press ✋ Ready to join." with buttons, else "…: react to join.")
+and the lobby goes on. On Signal, `/geo wait` makes the lobby wait 30s
+longer per use, for the countdown running or one still to come, but never
+past the lobby's 15 minutes; the extra wait is saved with the lobby. With
+buttons there is no countdown, and `/geo wait` says so.
+
+The buttons come under the lobby's message where the chat's network shows
+buttons (the bot says so in `initialize`), all in one row:
+
+    [✋ Ready: N] [Rounds: 3] [Answer timer: 3 min] [▶️ Start] [✖️ Cancel]
+
+✋ Ready, for anyone, is a reaction's join, by the presser's pseudonym:
+it is saved as a reaction's is, and its pop-up is "You're in: 2 joined."
+(how many have joined), or "You're already in."; reactions still count,
+and taking one back leaves. The rest are the starter's. The toggles each
+have two settings: what the lobby opened with (`/geo`'s length, or
+`GEO_ROUND`; 3 rounds) and double that, capped by the game's limits (a
+round at most 30 minutes, and the whole game within 44); if the first is
+already the most, a press says "Already the most." and changes nothing.
+A press's pop-up is the new setting ("Rounds: 6"), which the game that
+starts plays: more rounds reserve more photos, gathered while the lobby
+lasts if the stock lacks them (for up to 5 minutes from the press, never
+past the lobby's 15), and fewer return the spares to the stock. ▶️ Start
+shows once 2 have joined. ✖️ Cancel calls the lobby off as `/geo end`
+does. Every join, leave or toggle queues a `buttons` op for the lobby's
+watch with the row as it now is, which replaces the buttons under the
+intro, keeping its text (so the intro still gives the opening rounds and
+length). Each press calls the bot-only tool `geo_press` with `ready:`,
+`t1:` (rounds), `t2:` (answer timer), `start:` or `cancel:` and the
+game's ID, and its answer is the pop-up; under an older game, or once the
+lobby is over, a press (an older lobby's `wait:` too) does nothing but
+say so. A second `/geo` in the lobby says a game is waiting for players,
+and with buttons to press ✋ Ready.
 
 The keys of the last 1,000 photos used are kept, so none comes round
 again soon.
@@ -193,8 +214,9 @@ well within it.
 
 A game's watch lasts at most 59 minutes and 5 seconds (a lobby's 15
 minutes, in which its photos are gathered too, or without a lobby 5 to
-gather them, then at most 44 for the game), so the default `watch_max`
-of 1h is enough. A watch is set once, by `/geo`'s
+gather them, then at most 44 for the game; a lobby with buttons always
+asks for all of that, as its toggles may lengthen the game), so the
+default `watch_max` of 1h is enough. A watch is set once, by `/geo`'s
 answer, and can't be extended. `/geo` waits at most about 3 seconds for
 photos before it answers, so any `timeout` above 5 seconds will do.
 GeoGuess never waits past the bot's timeout anyway, less a few seconds to
@@ -309,7 +331,9 @@ their cancellation, and the outbox the bot reads. GeoGuess adds:
   in. In a group, if the bot says it takes `watchReactions`,
   it is the lobby's intro and the watch has `reactions`; round 1's photo
   follows as a `post` when the lobby starts the game (after a "Still
-  fetching" `post` if photos are missing). A recorded guess answers with
+  fetching" `post` if photos are missing). Where the bot shows buttons,
+  the answer has the lobby's row and `onPress` `geo_press`, and each
+  change to the row is a `buttons` op with the watch's ID. A recorded guess answers with
   the reaction 📍. `/geo` gives up in time for the bot's `deadline`.
 - When a round ends GeoGuess queues a `post` with the results, its players
   as `{u_…}` placeholders, then the next round's photo, one the game

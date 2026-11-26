@@ -10,7 +10,7 @@ the place and ranks players by how far off they were. A game is 3 rounds.
 /geo 90s | /geo 5m   rounds of that length (30s to 30m)
 /geo europe          a game in a continent or countries (/geo AU,NZ)
 /geo start           start the lobby now, once 2 have joined (starter only)
-/geo wait            the lobby waits 30s longer (starter only)
+/geo wait            the lobby waits 30s longer (starter only; Signal)
 /geo end, /geo stop  finish now, or call off the lobby (starter only)
 /geo skip            skip this round without scoring (starter only)
 /geo scores          this chat's totals over the last 7 days
@@ -20,16 +20,18 @@ the place and ranks players by how far off they were. A game is 3 rounds.
 
 - **Join:** in a group, press ✋ Ready under `/geo`'s answer (on
   Telegram, Discord and Slack), or react to it with any emoji (on Signal,
-  and anywhere else too). The starter must join too. It starts 30s after
-  the last join, once at least 2 have joined. It is called off after 15
-  minutes without 2.
+  and anywhere else too). The starter must join too. On Signal it starts
+  30s after the last join, once at least 2 have joined; with buttons only
+  the starter's ▶️ Start starts it. It is called off after 15 minutes
+  without starting.
 - **Lobby buttons:** on Telegram, Discord and Slack, the lobby's message
-  has ✋ Ready for anyone, the starter too, to join (each press its
-  player's own join), and under it ▶️ Start, ✖️ Cancel and ⏱ +30s, for
-  the starter only: start now
-  (the press counts as their join, and needs 2 joined), call it off, or
-  wait 30s longer per press (never past the 15 minutes). On Signal, type
-  `/geo start`, `/geo end` or `/geo wait`.
+  has one row: `✋ Ready: N` for anyone, the starter too, to join (N is
+  how many have), then for the starter only `Rounds: 3` and
+  `Answer timer: 3 min`, which each switch between what `/geo` opened
+  with and double that (within 30 minutes a round and 44 a game; at the
+  most, "Already the most."), `▶️ Start` once 2 have joined (the press
+  counts as their join), and `✖️ Cancel`. The row updates with each join
+  and change. On Signal, type `/geo start`, `/geo end` or `/geo wait`.
 - **Telegram:** the bot sees reactions only as the group's admin. With
   privacy mode on (the default), reply to the round's photo to guess.
 - **DMs:** there is no lobby. The game starts at once: `/geo` says how
