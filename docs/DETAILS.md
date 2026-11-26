@@ -52,6 +52,20 @@ A length and regions combine, as in `/geo europe 90s`.
 calls the game off. `/geo skip` goes on to the next round without
 scoring this one. Only the player who started the game may do either.
 
+In the lobby, the starter's `/geo start` (or the ▶️ Start button) starts
+the game at once, counting as their join, once at least 2 have joined, as
+when the countdown ends; with fewer it says so and the lobby goes on.
+`/geo wait` (or ⏱ +30s) makes the lobby wait 30s longer per use, for the
+countdown running or one still to come, but never past the lobby's 15
+minutes; the extra wait is saved with the lobby. ✖️ Cancel calls the
+lobby off as `/geo end` does. The buttons, for the starter only, come
+under the lobby's message where the chat's network shows buttons (the bot
+says so in `initialize`); each press calls the bot-only tool `geo_press`
+with `start:`, `cancel:` or `wait:` and the game's ID, and its answer is
+the pop-up; under an older game, or once the lobby is over, a press
+does nothing. A second `/geo` in the lobby says a game is waiting for
+players.
+
 The keys of the last 1,000 photos used are kept, so none comes round
 again soon.
 

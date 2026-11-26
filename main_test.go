@@ -493,7 +493,7 @@ func TestInitializeAndTools(t *testing.T) {
 			t.Errorf("tool %+v", tl)
 		}
 	}
-	if !slices.Equal(names, []string{"geo", "geo_guess"}) {
+	if !slices.Equal(names, []string{"geo", "geo_guess", "geo_press"}) {
 		t.Errorf("tools %v", names)
 	}
 	var pong struct{}

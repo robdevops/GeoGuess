@@ -88,6 +88,7 @@ type round struct {
 	Joined   []string       `json:"joined,omitempty"`   // who has joined
 	LastJoin time.Time      `json:"lastJoin,omitempty"` // when the last player joined: the game starts lobbyWait after
 	CallOff  time.Time      `json:"callOff,omitempty"`  // when the lobby gives up with fewer than minPlayers
+	Extra    time.Duration  `json:"extra,omitempty"`    // the starter's extra wait (⏱ +30s, /geo wait), after lobbyWait, within CallOff
 
 	starting bool // /geo is still deciding its answer: not saved, as the bot has no watch for it yet
 }
