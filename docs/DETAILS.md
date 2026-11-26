@@ -68,16 +68,17 @@ buttons there is no countdown, and `/geo wait` says so.
 The buttons come under the lobby's message where the chat's network shows
 buttons (the bot says so in `initialize`), all in one row:
 
-    [✋ Ready: N] [Rounds: 3] [Answer timer: 3 min] [▶️ Start] [✖️ Cancel]
+    [✋ Ready: N] [Rounds: 3] [▶️ Start] [✖️ Cancel]
 
 ✋ Ready, for anyone, is a reaction's join, by the presser's pseudonym:
 it is saved as a reaction's is, and its pop-up is "You're in: 2 joined."
 (how many have joined), or "You're already in."; reactions still count,
-and taking one back leaves. The rest are the starter's. The toggles each
-have two settings: what the lobby opened with (`/geo`'s length, or
-`GEO_ROUND`; 3 rounds) and double that, capped by the game's limits (a
-round at most 30 minutes, and the whole game within 44); if the first is
-already the most, a press says "Already the most." and changes nothing.
+and taking one back leaves. The rest are the starter's. The rounds toggle has
+two settings: what the lobby opened with (3 rounds) and double that,
+capped so the whole game is within 44 minutes; if the first is already
+the most, a press says "Already the most." and changes nothing. The
+round length is what `/geo` gives, or `GEO_ROUND`; there is no button for
+it.
 A press's pop-up is the new setting ("Rounds: 6"), which the game that
 starts plays: more rounds reserve more photos, gathered while the lobby
 lasts if the stock lacks them (for up to 5 minutes from the press, never
@@ -87,10 +88,11 @@ does. Every join, leave or toggle queues a `buttons` op for the lobby's
 watch with the row as it now is, which replaces the buttons under the
 intro, keeping its text (so the intro still gives the opening rounds and
 length). Each press calls the bot-only tool `geo_press` with `ready:`,
-`t1:` (rounds), `t2:` (answer timer), `start:` or `cancel:` and the
-game's ID, and its answer is the pop-up; under an older game, or once the
-lobby is over, a press (an older lobby's `wait:` too) does nothing but
-say so. A second `/geo` in the lobby says a game is waiting for players,
+`t1:` (rounds), `start:` or `cancel:` and the game's ID, and its answer
+is the pop-up; under an older game, or once the lobby is over, a press
+(an older lobby's `wait:` too) does nothing but say so. The answer timer
+toggle (`t2:`) is gone: a press of one under a lobby from before says
+"That button is gone." and changes nothing. A second `/geo` in the lobby says a game is waiting for players,
 and with buttons to press ✋ Ready.
 
 The keys of the last 1,000 photos used are kept, so none comes round
@@ -202,7 +204,8 @@ what gives it the `GEO_` settings.
 `chats` takes the groups' IDs as Signal or Telegram shows them, or
 `["all"]`; add `"dms": true` to play in DMs too. GeoGuess needs `post`
 (for the results), `react` (the 📍 on a counted guess, and the ⏰ on a
-round's photo with 5 seconds left) and `watch` (to read guesses and the
+round's photo with 5 seconds left; on Telegram, which allows only some
+emoji as reactions, 👌 and 😱) and `watch` (to read guesses and the
 lobby's reactions).
 
 The ⏰ is one more reaction a round, against the bot's per-chat rate for
@@ -334,13 +337,16 @@ their cancellation, and the outbox the bot reads. GeoGuess adds:
   fetching" `post` if photos are missing). Where the bot shows buttons,
   the answer has the lobby's row and `onPress` `geo_press`, and each
   change to the row is a `buttons` op with the watch's ID. A recorded guess answers with
-  the reaction 📍. `/geo` gives up in time for the bot's `deadline`.
+  the reaction 📍 (👌 on Telegram). `/geo` gives up in time for the bot's `deadline`.
 - When a round ends GeoGuess queues a `post` with the results, its players
   as `{u_…}` placeholders, then the next round's photo, one the game
   reserved, as a `post` with the image; after the last round, the totals
   and an `unwatch`. With 5s left in a round, GeoGuess queues a `react`
   with `post` set to the op ID of the round's photo `post`, `chat` to its
-  chat and `emoji` ⏰, so the bot reacts to its own message. A round that
+  chat and `emoji` ⏰ (😱 on Telegram), so the bot reacts to its own
+  message. The game's network (the call context's `network` when the bot
+  is on several, else the bot's) is saved with it when it starts, so a
+  reaction queued later, or after a restart, uses that network's emoji. A round that
   ended early, was skipped or ended, or is shorter than 10s gets none.
   Every round's photo, round 1's too, is a `post`, so each has an op ID
   for its ⏰. The photo's op ID is saved with the round, so the

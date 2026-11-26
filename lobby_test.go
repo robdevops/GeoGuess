@@ -76,12 +76,11 @@ func rowsJSON(rows [][]addon.Button) string {
 }
 
 // lobbyRow is the one row of buttons under a lobby with them: Ready with
-// ready joined, the toggles, Start if start, and Cancel.
-func lobbyRow(id string, ready int, rounds, timer string, start bool) [][]addon.Button {
+// ready joined, the rounds toggle, Start if start, and Cancel.
+func lobbyRow(id string, ready int, rounds string, start bool) [][]addon.Button {
 	row := []addon.Button{
 		{Label: fmt.Sprintf("✋ Ready: %d", ready), Data: "ready:" + id},
 		{Label: "Rounds: " + rounds, Data: "t1:" + id},
-		{Label: "Answer timer: " + timer, Data: "t2:" + id},
 	}
 	if start {
 		row = append(row, addon.Button{Label: "▶️ Start", Data: "start:" + id})
@@ -109,18 +108,21 @@ func TestLobbyButtons(t *testing.T) {
 	clk, c := lobbyClient(t, t.TempDir(), true)
 	r := c.geo("1m", from(clk, chat, alice))
 	id := r.Meta.Watch.ID
-	want := lobbyRow(id, 0, "1", "1 min", false)
+	want := lobbyRow(id, 0, "1", false)
 	if got := rowsJSON(r.Meta.Buttons); got != rowsJSON(want) || r.Meta.OnPress != "geo_press" || len(r.Meta.Buttons) != 1 {
 		t.Errorf("buttons %s, onPress %q", got, r.Meta.OnPress)
 	}
-	for _, b := range lobbyRow(id, 99, "99", "30 min", true)[0] {
+	if got := rowsJSON(r.Meta.Buttons); strings.Contains(got, "timer") || strings.Contains(got, "t2:") {
+		t.Errorf("an answer timer button: %s", got)
+	}
+	for _, b := range lobbyRow(id, 99, "99", true)[0] {
 		if len(b.Data) > 64 || len([]rune(b.Label)) > 32 {
 			t.Errorf("%+v: too long", b)
 		}
 	}
 	w := words(r)
 	if !strings.Contains(w, "Press ✋ Ready to join**, whoever started it too") || !strings.Contains(w, "the starter presses ▶️ Start") ||
-		!strings.Contains(w, "change the rounds and the answer timer with the buttons") || strings.Contains(strings.ToLower(w), "react") || strings.Contains(w, "/geo wait") {
+		!strings.Contains(w, "change the rounds with the buttons") || strings.Contains(w, "timer") || strings.Contains(strings.ToLower(w), "react") || strings.Contains(w, "/geo wait") {
 		t.Errorf("the intro with buttons: %q", w)
 	}
 	if got := words(c.geo("", from(clk, chat, bob))); got != "A game is waiting for players: press ✋ Ready under its message to join." {
@@ -196,13 +198,13 @@ func TestReadyRows(t *testing.T) {
 		t.Errorf("alice: %q", got)
 	}
 	ops := c.buttonOps("0")
-	if len(ops) != 1 || ops[0].Chat != chat || ops[0].Watch != id || rowsJSON(ops[0].Buttons) != rowsJSON(lobbyRow(id, 1, "1", "1 min", false)) {
+	if len(ops) != 1 || ops[0].Chat != chat || ops[0].Watch != id || rowsJSON(ops[0].Buttons) != rowsJSON(lobbyRow(id, 1, "1", false)) {
 		t.Fatalf("after alice: %+v", ops)
 	}
 	clk.Advance(10 * time.Second)
 	c.press(clk, "ready:"+id, chat, bob)
 	ops = c.buttonOps("0")
-	if len(ops) != 2 || ops[1].Watch != id || rowsJSON(ops[1].Buttons) != rowsJSON(lobbyRow(id, 2, "1", "1 min", true)) || len(ops[1].Buttons) != 1 {
+	if len(ops) != 2 || ops[1].Watch != id || rowsJSON(ops[1].Buttons) != rowsJSON(lobbyRow(id, 2, "1", true)) || len(ops[1].Buttons) != 1 {
 		t.Fatalf("after bob: %+v", ops)
 	}
 	saved, err := os.ReadFile(filepath.Join(dir, "geo.json"))
@@ -213,7 +215,7 @@ func TestReadyRows(t *testing.T) {
 		"_meta": map[string]any{vendor + "context": from(clk, chat, bob)}}, new(toolResult))
 	join(c, clk, chat, "u_carol")
 	ops = c.buttonOps("0")
-	if len(ops) != 4 || rowsJSON(ops[2].Buttons) != rowsJSON(lobbyRow(id, 1, "1", "1 min", false)) || rowsJSON(ops[3].Buttons) != rowsJSON(lobbyRow(id, 2, "1", "1 min", true)) {
+	if len(ops) != 4 || rowsJSON(ops[2].Buttons) != rowsJSON(lobbyRow(id, 1, "1", false)) || rowsJSON(ops[3].Buttons) != rowsJSON(lobbyRow(id, 2, "1", true)) {
 		t.Fatalf("bob's reaction taken back, carol's: %+v", ops)
 	}
 	clk.Advance(lobbyWait * 3)
@@ -525,10 +527,11 @@ func TestBusyLobby(t *testing.T) {
 	}
 }
 
-// The toggles: the starter's only; each flips between what the lobby
+// The rounds toggle: the starter's only; it flips between what the lobby
 // opened with and double that, re-queuing the buttons for its watch; the
-// game that starts plays the toggled rounds of the toggled length, with a
-// photo for each round and the spare.
+// game that starts plays the toggled rounds, of the length /geo gave,
+// with a photo for each round and the spare. A press of the answer timer
+// toggle, gone, from an older lobby, says so and changes nothing.
 func TestToggles(t *testing.T) {
 	dir := t.TempDir()
 	clk, c := lobbyClient(t, dir, true)
@@ -536,10 +539,8 @@ func TestToggles(t *testing.T) {
 	r := c.geo("2m", from(clk, chat, alice))
 	id := r.Meta.Watch.ID
 	waitFor(t, c.s, "the game's photos", func() bool { return c.s.reserved(chat) == need(2) })
-	for _, data := range []string{"t1:" + id, "t2:" + id} {
-		if got := c.press(clk, data, chat, bob); got != "Only the player who started this game can do that." {
-			t.Errorf("bob's %s: %q", data, got)
-		}
+	if got := c.press(clk, "t1:"+id, chat, bob); got != "Only the player who started this game can do that." {
+		t.Errorf("bob's t1: %q", got)
 	}
 	if ops := c.buttonOps("0"); len(ops) != 0 {
 		t.Fatalf("bob's presses changed the buttons: %+v", ops)
@@ -547,12 +548,13 @@ func TestToggles(t *testing.T) {
 	if got := c.press(clk, "t1:"+id, chat, alice); got != "Rounds: 4" {
 		t.Errorf("rounds: %q", got)
 	}
-	if got := c.press(clk, "t2:"+id, chat, alice); got != "Answer timer: 4 min" {
-		t.Errorf("timer: %q", got)
+	for _, user := range []string{alice, bob} {
+		if got := c.press(clk, "t2:"+id, chat, user); got != buttonGone {
+			t.Errorf("%s's timer: %q", user, got)
+		}
 	}
 	ops := c.buttonOps("0")
-	if len(ops) != 2 || ops[0].Watch != id || rowsJSON(ops[0].Buttons) != rowsJSON(lobbyRow(id, 0, "4", "2 min", false)) ||
-		rowsJSON(ops[1].Buttons) != rowsJSON(lobbyRow(id, 0, "4", "4 min", false)) {
+	if len(ops) != 1 || ops[0].Watch != id || rowsJSON(ops[0].Buttons) != rowsJSON(lobbyRow(id, 0, "4", false)) {
 		t.Fatalf("after the toggles: %+v", ops)
 	}
 	saved, err := os.ReadFile(filepath.Join(dir, "geo.json"))
@@ -582,7 +584,7 @@ func TestToggles(t *testing.T) {
 	g := c.s.rounds[chat]
 	of, length := g.of(), g.Deadline.Sub(g.Started)
 	c.s.mu.Unlock()
-	if of != 4 || length != 4*time.Minute {
+	if of != 4 || length != 2*time.Minute {
 		t.Errorf("the game: %d rounds of %s", of, length)
 	}
 	var round1 string
@@ -596,27 +598,23 @@ func TestToggles(t *testing.T) {
 	}
 }
 
-// A toggle's second setting is capped by the game's limits: maxRound for
-// the timer, maxGame for both; at the most, a toggle changes nothing.
+// The rounds toggle's second setting is capped by maxGame; at the most,
+// it changes nothing.
 func TestTogglesCapped(t *testing.T) {
 	for _, tc := range []struct {
 		rounds int
 		args   string
-		t1, t2 string
+		t1     string
 	}{
-		{1, "30m", alreadyMost, alreadyMost},            // a round of 30m: no room for 2, and the longest round
-		{1, "25m", alreadyMost, "Answer timer: 30 min"}, // double is past maxRound
-		{2, "10m", "Rounds: 3", "Answer timer: 14 min"}, // 4 rounds of 10m would run past maxGame
+		{1, "30m", alreadyMost}, // a round of 30m: no room for 2
+		{1, "25m", alreadyMost},
+		{2, "10m", "Rounds: 3"}, // 4 rounds of 10m would run past maxGame
 	} {
 		clk, c := lobbyClient(t, t.TempDir(), true)
 		c.games(tc.rounds)
 		id := c.geo(tc.args, from(clk, chat, alice)).Meta.Watch.ID
 		if got := c.press(clk, "t1:"+id, chat, alice); got != tc.t1 {
 			t.Errorf("%d of %s: rounds %q", tc.rounds, tc.args, got)
-		}
-		c.press(clk, "t1:"+id, chat, alice) // back to what it opened with
-		if got := c.press(clk, "t2:"+id, chat, alice); got != tc.t2 {
-			t.Errorf("%d of %s: timer %q", tc.rounds, tc.args, got)
 		}
 		c.s.mu.Lock()
 		r := c.s.rounds[chat]
@@ -625,7 +623,7 @@ func TestTogglesCapped(t *testing.T) {
 		if !fits {
 			t.Errorf("%d of %s: too long a game", tc.rounds, tc.args)
 		}
-		if tc.t1 == alreadyMost && len(c.buttonOps("0")) != map[bool]int{true: 0, false: 1}[tc.t2 == alreadyMost] {
+		if tc.t1 == alreadyMost && len(c.buttonOps("0")) != 0 {
 			t.Errorf("%d of %s: ops %+v", tc.rounds, tc.args, c.buttonOps("0"))
 		}
 		c.close()
@@ -675,7 +673,7 @@ func TestTypedStartButtons(t *testing.T) {
 		t.Errorf("alone: %q", got)
 	}
 	ops := c.buttonOps("0")
-	if len(ops) != 1 || rowsJSON(ops[0].Buttons) != rowsJSON(lobbyRow(id, 1, "1", "1 min", false)) {
+	if len(ops) != 1 || rowsJSON(ops[0].Buttons) != rowsJSON(lobbyRow(id, 1, "1", false)) {
 		t.Errorf("ops %+v", ops)
 	}
 }

@@ -90,12 +90,13 @@ type round struct {
 	CallOff  time.Time      `json:"callOff,omitempty"`  // when the lobby gives up with fewer than minPlayers
 	Extra    time.Duration  `json:"extra,omitempty"`    // the starter's extra wait (⏱ +30s, /geo wait), after lobbyWait, within CallOff
 	// Buttons marks a lobby with buttons: no timer starts it, only ▶️ Start
-	// or /geo start; its toggles switch the rounds and their length between
-	// BaseOf and BaseLength, what it opened with, and double those, within
-	// the game's limits.
-	Buttons    bool          `json:"buttons,omitempty"`
-	BaseOf     int           `json:"baseOf,omitempty"`
-	BaseLength time.Duration `json:"baseLength,omitempty"`
+	// or /geo start; its toggle switches the rounds between BaseOf, what it
+	// opened with, and double that, within the game's limits.
+	Buttons bool `json:"buttons,omitempty"`
+	BaseOf  int  `json:"baseOf,omitempty"`
+	// Network is the chat network the game started on ("telegram", ...),
+	// for its reactions and caption; "" in a game saved before it was kept.
+	Network string `json:"network,omitempty"`
 
 	starting bool // /geo is still deciding its answer: not saved, as the bot has no watch for it yet
 }

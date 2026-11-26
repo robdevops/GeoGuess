@@ -2434,3 +2434,75 @@ func TestAlarmRestart(t *testing.T) {
 		c.close()
 	}
 }
+
+// telegramClient is a fake clock and a client of a server initialized by
+// a bot on network, or, with several, on networks (the first being its
+// Network); its outbox is read, not subscribed to.
+func telegramClient(t *testing.T, dir string, networks ...string) (*fakeClock, *client) {
+	t.Helper()
+	clk := &fakeClock{now: time.Date(2026, 11, 20, 14, 0, 0, 0, time.UTC)}
+	c := connect(t, testServer(t, dir, clk, &fakeFinder{}, io.Discard))
+	caps := map[string]any{"version": 1, "network": networks[0]}
+	if len(networks) > 1 {
+		caps["networks"] = networks
+	}
+	c.result("initialize", map[string]any{
+		"protocolVersion": protocolVersion,
+		"capabilities":    map[string]any{"experimental": map[string]any{vendor + "addon": caps}},
+	}, new(initializeResult))
+	c.send(`{"jsonrpc":"2.0","method":"notifications/initialized"}`)
+	return clk, c
+}
+
+// On Telegram, which allows only some emoji as reactions, a recorded
+// guess gets 👌 and the 5-seconds-left reaction is 😱; elsewhere 📍 and
+// ⏰. On a bot on several networks, the chat's own network, from the
+// call's context, decides.
+func TestTelegramEmoji(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		networks   []string
+		chat       string // the call's context's, "" for none
+		pin, alarm string
+	}{
+		{"telegram", []string{"telegram"}, "", pinTelegram, alarmTelegram},
+		{"signal", []string{"signal"}, "", pin, alarm},
+		{"a Telegram chat on two", []string{"signal", "telegram"}, "telegram", pinTelegram, alarmTelegram},
+		{"a Signal chat on two", []string{"telegram", "signal"}, "signal", pin, alarm},
+	} {
+		clk, c := telegramClient(t, t.TempDir(), tc.networks...)
+		ctx := from(clk, chat, alice)
+		ctx.Network = tc.chat
+		_, photo, cursor := c.begin(clk, "1m", ctx)
+		g := from(clk, chat, alice)
+		g.Network = tc.chat
+		if r := c.guess("-37.6, 143.9", g); r.Meta == nil || r.Meta.React != tc.pin {
+			t.Errorf("%s: the guess's reaction %+v", tc.name, r.Meta)
+		}
+		clk.Advance(time.Minute - warnLeft)
+		a := alarms(c.outbox(cursor).Ops)
+		if len(a) != 1 || a[0].Post != photo.ID || a[0].Emoji != tc.alarm {
+			t.Errorf("%s: the 5s reaction %+v, want %s on %s", tc.name, a, tc.alarm, photo.ID)
+		}
+		c.close()
+	}
+}
+
+// The game's network is saved with it, so after a restart its ⏰ is
+// still Telegram's.
+func TestTelegramEmojiRestart(t *testing.T) {
+	dir := t.TempDir()
+	clk, c := telegramClient(t, dir, "signal", "telegram")
+	ctx := from(clk, chat, alice)
+	ctx.Network = "telegram"
+	_, photo, _ := c.begin(clk, "1m", ctx)
+	c.close()
+
+	clk = &fakeClock{now: clk.Now().Add(20 * time.Second)}
+	c = connect(t, testServer(t, dir, clk, &fakeFinder{}, io.Discard))
+	clk.Advance(time.Minute - warnLeft - 20*time.Second)
+	a := alarms(c.outbox("0").Ops)
+	if len(a) != 1 || a[0].Post != photo.ID || a[0].Emoji != alarmTelegram {
+		t.Errorf("the 5s reaction after a restart %+v, want %s on %s", a, alarmTelegram, photo.ID)
+	}
+}
