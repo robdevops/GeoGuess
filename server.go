@@ -173,7 +173,7 @@ func newServer(cfg config, clk clock, photos finder, logger *log.Logger) (*serve
 		changed: make(chan struct{}),
 		seeds:   map[string]*geo.Seeds{},
 	}
-	s.srv = addon.New(addon.Config{Name: "geoguess", Title: "GeoGuess", Version: "1", Tools: s.tools(), Now: clk.Now, Changed: s.save})
+	s.srv = addon.New(addon.Config{Name: "geoguess", Title: "GeoGuess", Tools: s.tools(), Now: clk.Now, Changed: s.save})
 	if err := os.MkdirAll(filepath.Join(cfg.StateDir, photoDir), 0o700); err != nil {
 		return nil, fmt.Errorf("GEO_STATE_DIR can't hold its photos: %v", bare(err))
 	}
