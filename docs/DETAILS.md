@@ -68,18 +68,19 @@ buttons there is no countdown, and `/geo wait` says so.
 The buttons come under the lobby's message where the chat's network shows
 buttons (the bot says so in `initialize`), all in one row:
 
-    [✅ N] [Rounds: 3] [▶️] [✖️]
+    [✅ N] [Rounds: 3] [Interval: 180s] [▶️] [✖️]
 
 ✅, for anyone, is a reaction's join, by the presser's pseudonym:
 it is saved as a reaction's is, and its pop-up is "You're in: 2 joined."
 (how many have joined), or "You're already in."; reactions still count,
-and taking one back leaves. The rest are the starter's. The rounds toggle has
-two settings: what the lobby opened with (3 rounds) and double that,
-capped so the whole game is within 44 minutes; if the first is already
-the most, a press says "Already the most." and changes nothing. The
-round length is what `/geo` gives, or `GEO_ROUND`; there is no button for
-it.
-A press's pop-up is the new setting ("Rounds: 6"), which the game that
+and taking one back leaves. The rest are the starter's. The toggles each
+have two settings: what the lobby opened with (3 rounds; for Interval,
+each round's answer time, `/geo`'s length or `GEO_ROUND`, always in
+whole seconds, as "Interval: 180s") and double that, capped by the
+game's limits (a round at most 30 minutes, and the whole game within
+44); if the first is already the most, a press says "Already the most."
+and changes nothing.
+A press's pop-up is the new setting ("Rounds: 6", "Interval: 360s"), which the game that
 starts plays: more rounds reserve more photos, gathered while the lobby
 lasts if the stock lacks them (for up to 5 minutes from the press, never
 past the lobby's 15), and fewer return the spares to the stock. ▶️
@@ -88,12 +89,11 @@ does. Every join, leave or toggle queues a `buttons` op for the lobby's
 watch with the row as it now is, which replaces the buttons under the
 intro, keeping its text (so the intro still gives the opening rounds and
 length). Each press calls the bot-only tool `geo_press` with `ready:`,
-`t1:` (rounds), `start:` or `cancel:` and the game's ID, and its answer
-is the pop-up; under an older game, or once the lobby is over, a press
-(an older lobby's `wait:` too) does nothing but say so. The answer timer
-toggle (`t2:`) is gone: a press of one under a lobby from before says
-"That button is gone." and changes nothing. A second `/geo` in the lobby says a game is waiting for players,
-and with buttons to press ✅.
+`t1:` (rounds), `t2:` (interval), `start:` or `cancel:` and the game's
+ID, and its answer is the pop-up; under an older game, or once the lobby
+is over, a press (an older lobby's `wait:` too) does nothing but say so.
+A second `/geo` in the lobby says a game is waiting for players, and
+with buttons to press ✅.
 
 The keys of the last 1,000 photos used are kept, so none comes round
 again soon.
