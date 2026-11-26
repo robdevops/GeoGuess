@@ -982,7 +982,8 @@ func mostRounds(length, gap time.Duration) int {
 }
 
 // toggleRoundsLocked switches r's lobby's rounds between what it opened
-// with and double that, at most mostRounds: its pop-up. The game's photos
+// with and double that, at most mostRounds: its pop-up, and rewrites the
+// lobby's intro, which says them, with its buttons. The game's photos
 // follow: the spares go back to the stock, or more are reserved and, if
 // the stock lacks them, gathered, until fetchMax from now but not past
 // the lobby's call-off. s.mu is held.
@@ -1016,7 +1017,8 @@ func (s *server) toggleRoundsLocked(r *round) string {
 			s.wakeUp()
 		}
 	}
-	s.buttonsLocked(r)
+	// The intro says the rounds: rewrite it with the buttons.
+	s.queue(addon.Op{Op: "buttons", Chat: r.Chat, Watch: r.ID, Buttons: lobbyRows(r), Text: lobbyIntro(r)})
 	return fmt.Sprintf("Rounds: %d", next)
 }
 

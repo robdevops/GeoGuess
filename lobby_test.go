@@ -557,6 +557,9 @@ func TestToggles(t *testing.T) {
 	if len(ops) != 1 || ops[0].Watch != id || rowsJSON(ops[0].Buttons) != rowsJSON(lobbyRow(id, 0, "4", false)) {
 		t.Fatalf("after the toggles: %+v", ops)
 	}
+	if !strings.HasPrefix(ops[0].Text, "🌍 **GeoGuess** · 4 rounds of 2 min") || !strings.Contains(ops[0].Text, "Press ✅ to join") {
+		t.Errorf("the intro after the toggle: %q", ops[0].Text)
+	}
 	saved, err := os.ReadFile(filepath.Join(dir, "geo.json"))
 	if err != nil || !strings.Contains(string(saved), `"of": 4`) {
 		t.Errorf("the toggle isn't saved: %v", err)
@@ -564,6 +567,9 @@ func TestToggles(t *testing.T) {
 	// Back and forth: the spares go back to the stock, and come again.
 	if got := c.press(clk, "t1:"+id, chat, alice); got != "Rounds: 2" {
 		t.Errorf("rounds back: %q", got)
+	}
+	if ops := c.buttonOps("0"); len(ops) != 2 || !strings.HasPrefix(ops[1].Text, "🌍 **GeoGuess** · 2 rounds of 2 min") {
+		t.Errorf("the intro back: %+v", ops)
 	}
 	c.s.mu.Lock()
 	n := c.s.reserved(chat)
