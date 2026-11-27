@@ -309,7 +309,7 @@ func (s *server) start(ctx context.Context, c *addon.Context, length time.Durati
 	if lobby { // players join by reacting to the intro first; photos are gathered meanwhile, until GiveUp, within lobbyMax
 		r.Lobby, r.Waiting, r.Joined, r.CallOff = true, false, nil, now.Add(lobbyMax)
 		r.Until = r.Until.Add(lobbyMax)
-		if s.srv.Buttons() { // started by ▶️ alone; the watch has room for the toggles' longest game
+		if c.Buttons { // started by ▶️ alone; the watch has room for the toggles' longest game
 			r.Buttons, r.BaseOf = true, of
 			r.Until = r.CallOff.Add(maxGame)
 		}

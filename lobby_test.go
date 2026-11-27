@@ -683,3 +683,15 @@ func TestTypedStartButtons(t *testing.T) {
 		t.Errorf("ops %+v", ops)
 	}
 }
+
+// On a bot on two networks whose Telegram shows buttons, a Signal group's
+// lobby is one for reactions: its chat shows none.
+func TestNoButtonsChat(t *testing.T) {
+	clk, c := lobbyClient(t, t.TempDir(), true)
+	ctx := from(clk, chat, alice)
+	ctx.Network, ctx.Buttons = "signal", false
+	r := c.geo("1m", ctx)
+	if r.Meta == nil || r.Meta.Buttons != nil || r.Meta.OnPress != "" || !r.Meta.Watch.Reactions || !strings.Contains(words(r), "React to this message") {
+		t.Fatalf("a Signal lobby: %q, %+v", words(r), r.Meta)
+	}
+}

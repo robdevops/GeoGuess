@@ -316,6 +316,9 @@ func from(clk clock, chat, user string) callContext {
 // tool calls a tool as the bot does, with the message's context in _meta.
 func (c *client) tool(name string, args map[string]string, ctx callContext) toolResult {
 	c.t.Helper()
+	if ctx.Network == "" { // a bot on one network: its chats show buttons if it does
+		ctx.Buttons = c.s.srv.Buttons()
+	}
 	var r toolResult
 	c.result("tools/call", map[string]any{
 		"name": name, "arguments": args,
