@@ -1208,7 +1208,7 @@ func TestLabels(t *testing.T) {
 	}
 	r := &round{Deadline: time.Unix(1000, 0)}
 	for left, want := range map[time.Duration]string{30 * time.Second: "30s", 2 * time.Minute: "2m", 102 * time.Second: "1m42s", -time.Second: "0s"} {
-		if got := words(busy(r, r.Deadline.Add(-left))); got != fmt.Sprintf("A round is on: %s left.", want) {
+		if got := words(busy(r, "", r.Deadline.Add(-left))); got != fmt.Sprintf("A round is on: %s left.", want) {
 			t.Errorf("busy %s: %q", left, got)
 		}
 	}

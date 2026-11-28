@@ -93,7 +93,7 @@ is the pop-up; under an older game, or once the lobby is over, a press
 (an older lobby's `wait:` too) does nothing but say so. The answer timer
 toggle (`t2:`) is gone: a press of one under a lobby from before says
 "That button is gone." and changes nothing. A second `/geo` in the lobby says a game is waiting for players,
-and with buttons to press ✅.
+and with buttons to press ✅, and without buttons to react to its message (its starter is also told `/geo start`).
 
 The keys of the last 1,000 photos used are kept, so none comes round
 again soon.

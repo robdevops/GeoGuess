@@ -221,13 +221,17 @@ func (s *server) command(ctx context.Context, c *addon.Context, args string) add
 	return s.start(ctx, c, length, region)
 }
 
-// busy is the answer to /geo while a game is on.
-func busy(r *round, now time.Time) addon.Result {
+// busy is the answer to sender's /geo while a game is on. Only the
+// starter is told /geo start, as it turns down anyone else.
+func busy(r *round, sender string, now time.Time) addon.Result {
 	if r.Lobby && r.Buttons {
 		return addon.Text("A game is waiting for players: press ✅ under its message to join.")
 	}
 	if r.Lobby {
-		return addon.Text("A game is waiting for players: react to its message to join, or /geo start.")
+		if sender == r.Starter {
+			return addon.Text("A game is waiting for players: react to its message to join, or /geo start.")
+		}
+		return addon.Text("A game is waiting for players: react to its message to join.")
 	}
 	if r.Waiting {
 		return addon.Text(fmt.Sprintf("A game is on: round %d's photo is on its way.", r.Number+1))
@@ -259,7 +263,7 @@ func (s *server) start(ctx context.Context, c *addon.Context, length time.Durati
 	now := s.clock.Now()
 	if r := s.rounds[c.Chat]; r != nil {
 		s.mu.Unlock()
-		return busy(r, now)
+		return busy(r, c.Sender, now)
 	}
 	of := s.perGame
 	r := &round{

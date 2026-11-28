@@ -144,7 +144,7 @@ func TestLobbyButtons(t *testing.T) {
 		!strings.Contains(words(r), "/geo start") || !strings.Contains(words(r), "/geo wait") {
 		t.Errorf("the intro without buttons: %q", words(r))
 	}
-	if got := words(c.geo("", from(clk, chat, bob))); got != "A game is waiting for players: react to its message to join, or /geo start." {
+	if got := words(c.geo("", from(clk, chat, bob))); got != "A game is waiting for players: react to its message to join." {
 		t.Errorf("busy without buttons: %q", got)
 	}
 }
@@ -511,12 +511,16 @@ func TestPressRacesTimer(t *testing.T) {
 }
 
 // A second /geo in the lobby says the game is waiting for players, and
-// how to join or start it; once it has started, how long its round has.
+// how to join it (and its starter how to start it); once it has started,
+// how long its round has.
 func TestBusyLobby(t *testing.T) {
 	clk, c := lobbyClient(t, t.TempDir(), false)
 	c.lobby(clk, chat)
-	if got := words(c.geo("", from(clk, chat, bob))); got != "A game is waiting for players: react to its message to join, or /geo start." {
+	if got := words(c.geo("", from(clk, chat, bob))); got != "A game is waiting for players: react to its message to join." {
 		t.Errorf("in the lobby: %q", got)
+	}
+	if got := words(c.geo("", from(clk, chat, alice))); got != "A game is waiting for players: react to its message to join, or /geo start." {
+		t.Errorf("in the lobby, to its starter: %q", got)
 	}
 	join(c, clk, chat, alice)
 	join(c, clk, chat, bob)
