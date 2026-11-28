@@ -70,10 +70,15 @@ buttons (the bot says so in `initialize`), all in one row:
 
     [✅ N] [Rounds: 3] [▶️] [✖️]
 
-✅, for anyone, is a reaction's join, by the presser's pseudonym:
-it is saved as a reaction's is, and its pop-up is "You're in: 2 joined."
-(how many have joined), or "You're already in."; reactions still count,
-and taking one back leaves. The rest are the starter's. The rounds toggle has
+✅, for anyone, is a toggle: a reaction's join, by the presser's
+pseudonym, or, from a player already in (by ✅, a reaction, or the
+starter's), a reaction taken back, which leaves. It is saved as a
+reaction's is, and the row is re-sent, so the count drops and ▶️ goes
+below 2. Its pop-up is "You're in: 2 ready." or "You're out: 1 ready."
+(how many are in). The starter may leave too; their ▶️ still counts as
+their join. After the lobby, a press still says "That game has already
+started." or "That game is over."; reactions still count, and taking
+one back leaves. The rest are the starter's. The rounds toggle has
 two settings: what the lobby opened with (5 rounds) and double that,
 capped so the whole game is within 44 minutes; if the first is already
 the most, a press says "Already the most." and changes nothing. The

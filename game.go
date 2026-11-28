@@ -40,8 +40,6 @@ const (
 	moreWait = 30 * time.Second
 	// pressTool is the tool the lobby's buttons call.
 	pressTool = "geo_press"
-	// alreadyIn is ✅'s pop-up for a player who has joined.
-	alreadyIn = "You're already in."
 	// alreadyMost is a toggle's pop-up when its setting can't go higher.
 	alreadyMost = "Already the most."
 	// buttonGone is the pop-up of the answer timer toggle, gone, pressed
@@ -51,9 +49,15 @@ const (
 	noCountdown = "There's no countdown: the starter presses ▶️ when everyone's in."
 )
 
-// readyIn is ✅'s pop-up for a join: how many have joined.
+// readyIn is ✅'s pop-up for a join: how many are ready.
 func readyIn(n int) string {
-	return fmt.Sprintf("You're in: %d joined.", n)
+	return fmt.Sprintf("You're in: %d ready.", n)
+}
+
+// readyOut is ✅'s pop-up for a player who was in and pressed it again,
+// leaving: how many are ready.
+func readyOut(n int) string {
+	return fmt.Sprintf("You're out: %d ready.", n)
 }
 
 // pin is the reaction to a recorded guess; on Telegram, which allows only
@@ -1048,7 +1052,7 @@ func (s *server) reacted(c *addon.Context, removed bool) addon.Result {
 	case !removed && !in:
 		s.joinLocked(r, c.Sender)
 	case removed && in:
-		r.Joined = slices.DeleteFunc(r.Joined, func(u string) bool { return u == c.Sender })
+		s.leaveLocked(r, c.Sender)
 	default:
 		s.mu.Unlock()
 		return addon.Text("Noted.")
@@ -1069,6 +1073,17 @@ func (s *server) joinLocked(r *round, who string) bool {
 	}
 	r.Joined = append(r.Joined, who)
 	r.LastJoin = s.clock.Now()
+	return true
+}
+
+// leaveLocked takes who out of r's lobby, if in it, reporting whether
+// they left: a reaction taken back, or ✅ pressed again. The caller
+// re-arms the lobby (armLobby) and re-sends its buttons. s.mu is held.
+func (s *server) leaveLocked(r *round, who string) bool {
+	if !slices.Contains(r.Joined, who) {
+		return false
+	}
+	r.Joined = slices.DeleteFunc(r.Joined, func(u string) bool { return u == who })
 	return true
 }
 
@@ -1135,7 +1150,7 @@ func (s *server) beginLocked(r *round) {
 }
 
 // lobbyAct is the starter's start, cancel, wait or rounds toggle (t1)
-// for the lobby of the game in c's chat, or anyone's ready (a join), or
+// for the lobby of the game in c's chat, or anyone's ready (a join, or a leave if in), or
 // t2, the answer timer toggle under an older lobby, now gone: a press of one of its buttons (pressed, for the
 // game id), or /geo start or /geo wait. It answers in words: the press's
 // pop-up, or the command's answer. Its work is in memory and in the
@@ -1159,14 +1174,16 @@ func (s *server) lobbyAct(c *addon.Context, action, id string, pressed bool) str
 	case action == "t2": // the answer timer toggle, under an older lobby, is gone: anyone's press changes nothing
 		s.mu.Unlock()
 		return buttonGone
-	case action == "ready": // anyone's, as a reaction's join
-		if !s.joinLocked(r, c.Sender) {
-			s.mu.Unlock()
-			return alreadyIn
+	case action == "ready": // anyone's: a toggle, as a reaction's join, or one taken back
+		text := ""
+		if s.leaveLocked(r, c.Sender) {
+			text = readyOut(len(r.Joined))
+		} else {
+			s.joinLocked(r, c.Sender)
+			text = readyIn(len(r.Joined))
 		}
 		s.armLobby(r)
 		s.buttonsLocked(r)
-		text := readyIn(len(r.Joined))
 		s.mu.Unlock()
 		s.save()
 		return text

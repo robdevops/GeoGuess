@@ -159,29 +159,76 @@ func (s *server) joined(chat string) []string {
 	return nil
 }
 
-// ✅: anyone's join, the starter's too, counted as a reaction's;
-// twice is already in; with a reaction's join, also already in.
+// ✅: anyone's join, the starter's too, counted as a reaction's; a
+// toggle: pressed again, the player is out, as a reaction taken back,
+// a reaction's join too; and again, in.
 func TestPressReady(t *testing.T) {
 	clk, c := lobbyClient(t, t.TempDir(), true)
 	id := c.lobby(clk, chat)
-	if got := c.press(clk, "ready:"+id, chat, bob); got != "You're in: 1 joined." {
+	if got := c.press(clk, "ready:"+id, chat, bob); got != "You're in: 1 ready." {
 		t.Errorf("bob's ready: %q", got)
 	}
-	if got := c.press(clk, "ready:"+id, chat, bob); got != "You're already in." {
+	if got := c.press(clk, "ready:"+id, chat, bob); got != "You're out: 0 ready." {
 		t.Errorf("bob again: %q", got)
 	}
+	if got := c.press(clk, "ready:"+id, chat, bob); got != "You're in: 1 ready." {
+		t.Errorf("bob a third time: %q", got)
+	}
 	join(c, clk, chat, "u_carol") // a reaction still counts
-	if got := c.press(clk, "ready:"+id, chat, "u_carol"); got != "You're already in." {
+	if got := c.press(clk, "ready:"+id, chat, "u_carol"); got != "You're out: 1 ready." {
 		t.Errorf("carol, who reacted: %q", got)
 	}
-	if got := c.press(clk, "ready:"+id, chat, alice); got != "You're in: 3 joined." {
+	if got := c.press(clk, "ready:"+id, chat, "u_carol"); got != "You're in: 2 ready." {
+		t.Errorf("carol again: %q", got)
+	}
+	if got := c.press(clk, "ready:"+id, chat, alice); got != "You're in: 3 ready." {
 		t.Errorf("alice, the starter: %q", got)
 	}
 	if j := c.s.joined(chat); !slices.Equal(j, []string{bob, "u_carol", alice}) || !c.s.inLobby(chat) {
 		t.Errorf("joined %v", j)
 	}
+	if got := c.press(clk, "ready:"+id, chat, alice); got != "You're out: 2 ready." {
+		t.Errorf("alice, the starter, again: %q", got)
+	}
+	if j := c.s.joined(chat); !slices.Equal(j, []string{bob, "u_carol"}) {
+		t.Errorf("joined after alice's leave %v", j)
+	}
 	if got := c.press(clk, "ready:rold", chat, bob); got != "That game is over." {
 		t.Errorf("an older game's ready: %q", got)
+	}
+}
+
+// ✅ pressed twice re-queues the row each time: the count goes up, then
+// back down, ▶️ going at 1; pressed again, up. It is saved.
+func TestReadyToggleRows(t *testing.T) {
+	dir := t.TempDir()
+	clk, c := lobbyClient(t, dir, true)
+	id := c.lobby(clk, chat)
+	c.press(clk, "ready:"+id, chat, alice)
+	c.press(clk, "ready:"+id, chat, bob)
+	if got := c.press(clk, "ready:"+id, chat, bob); got != "You're out: 1 ready." {
+		t.Errorf("bob's second press: %q", got)
+	}
+	ops := c.buttonOps("0")
+	if len(ops) != 3 || rowsJSON(ops[1].Buttons) != rowsJSON(lobbyRow(id, 2, "1", true)) || rowsJSON(ops[2].Buttons) != rowsJSON(lobbyRow(id, 1, "1", false)) {
+		t.Fatalf("after bob's leave: %+v", ops)
+	}
+	saved, err := os.ReadFile(filepath.Join(dir, "geo.json"))
+	if err != nil || strings.Contains(string(saved), bob) {
+		t.Errorf("bob's leave not saved: %v", err)
+	}
+	if got := c.press(clk, "ready:"+id, chat, bob); got != "You're in: 2 ready." {
+		t.Errorf("bob's third press: %q", got)
+	}
+	ops = c.buttonOps("0")
+	if len(ops) != 4 || rowsJSON(ops[3].Buttons) != rowsJSON(lobbyRow(id, 2, "1", true)) {
+		t.Fatalf("after bob's rejoin: %+v", ops)
+	}
+	if got := c.press(clk, "start:"+id, chat, alice); got != "Starting!" {
+		t.Errorf("start: %q", got)
+	}
+	if got := c.press(clk, "ready:"+id, chat, bob); got != "That game has already started." {
+		t.Errorf("bob after the start: %q", got)
 	}
 }
 
@@ -194,7 +241,7 @@ func TestReadyRows(t *testing.T) {
 	dir := t.TempDir()
 	clk, c := lobbyClient(t, dir, true)
 	id := c.lobby(clk, chat)
-	if got := c.press(clk, "ready:"+id, chat, alice); got != "You're in: 1 joined." {
+	if got := c.press(clk, "ready:"+id, chat, alice); got != "You're in: 1 ready." {
 		t.Errorf("alice: %q", got)
 	}
 	ops := c.buttonOps("0")
@@ -264,7 +311,7 @@ func TestReadyRaces(t *testing.T) {
 		players := slices.Clone(c.s.rounds[chat].Players)
 		c.s.mu.Unlock()
 		switch {
-		case got == "You're in: 3 joined." && len(players) == 3:
+		case got == "You're in: 3 ready." && len(players) == 3:
 		case got == "That game has already started." && len(players) == 2:
 		default:
 			t.Errorf("ready %q, players %v", got, players)

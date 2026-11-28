@@ -25,13 +25,13 @@ the place and ranks players by how far off they were. A game is 5 rounds.
   the starter's ▶️ starts it. It is called off after 15 minutes
   without starting.
 - **Lobby buttons:** on Telegram, Discord and Slack, the lobby's message
-  has one row: `✅ N` for anyone, the starter too, to join (N is
-  how many have), then for the starter only `Rounds: 3`, which switches
+  has one row: `✅ N` for anyone, the starter too, to join, or,
+  pressed again, to leave (a toggle; N is how many are in), then for the starter only `Rounds: 3`, which switches
   between what `/geo` opened with and double that (within 44 minutes a
   game; at the most, "Already the most."), `▶️` once 2 have joined
   (the press counts as their join), and `✖️`. The round length is
-  what `/geo` (or `GEO_ROUND`) gives. The row updates with each join and
-  change. On Signal, type `/geo start`, `/geo end` or `/geo wait`.
+  what `/geo` (or `GEO_ROUND`) gives. The row updates with each join,
+  leave and change. On Signal, type `/geo start`, `/geo end` or `/geo wait`.
 - **Telegram:** the bot sees reactions only as the group's admin. With
   privacy mode on (the default), reply to the round's photo to guess.
 - **DMs:** there is no lobby. The game starts at once: `/geo` says how
